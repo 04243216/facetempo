@@ -1,0 +1,28 @@
+# FaceTempo 直接依赖（人读清单）
+# 锁文件见 requirements.txt（由 pip freeze 生成，机器读）
+# 实测环境：Windows + Python 3.12.10
+# 注意：mediapipe 1.x 已移除 mp.solutions，src 中使用 Tasks API（tasks.vision.FaceLandmarker）
+# 安装：venv\Scripts\python.exe -m pip install -r requirements.txt
+
+# ---------- W1：关键点提取 + 特征表 + 曲线 ----------
+opencv-python>=5.0,<6        # 实测 5.0.0.93（视频读写、叠加绘制）
+mediapipe>=1.2,<2            # 实测 1.2.2（附带 opencv-contrib-python）
+numpy>=2.5,<3                # 实测 2.5.4（关键点数值计算）
+pandas>=3.1,<4               # 实测 3.1.1（逐帧特征 CSV）
+matplotlib>=3.11,<4          # 实测 3.11.2（特征曲线图）
+
+# ---------- W7 - W9：轻量基线（到周次再启用）----------
+# torch>=2.2,<3
+# scikit-learn>=1.4,<2
+
+# ---------- W10 - W12：Web 应用 + 数据库（到周次再启用）----------
+# gradio>=4.0,<6
+# SQLAlchemy>=2.0,<3
+# PyMySQL>=1.1,<2
+
+# ---------- 开发 / 自测（可选）----------
+# pytest>=8.0,<9
+# jupyterlab>=4.0,<5
+
+# 注：OpenFace 2.x 不是 pip 包，需单独下载 Windows 预编译版并加入 PATH，
+#     见 docs/technical_report.md 的「环境」一节。

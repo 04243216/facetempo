@@ -1,0 +1,17 @@
+# 统一换行，避免 Windows/Linux 协作时的整文件 diff 噪声
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制
+*.mp4 binary
+*.avi binary
+*.mov binary
+*.mkv binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pt binary
+*.pth binary
+*.onnx binary

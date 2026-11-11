@@ -1,0 +1,46 @@
+# ---------- 原始视频与生成产物不进 git ----------
+data/raw/
+data/processed/
+outputs/overlay/
+outputs/features/
+outputs/curves/
+
+# reports / figures 允许提交（小图、报告），保留目录占位
+!outputs/reports/.gitkeep
+!outputs/figures/.gitkeep
+
+# ---------- 环境 ----------
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# ---------- 模型权重 / 大文件 ----------
+models/
+*.task
+*.tflite
+*.pth
+*.pt
+*.onnx
+*.ckpt
+*.h5
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# 例外：测试用极短视频如需入库，单独用 git add -f 指定
+
+# ---------- 编辑器 / 系统 ----------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ---------- 本地配置与密钥 ----------
+.env
+.env.*
+*.local
