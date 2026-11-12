@@ -15,9 +15,15 @@ FaceTempo W1+W2 · extract_landmarks.py  (MediaPipe Tasks API, 1.x)
     outputs/curves/curve.png
 
 特征列:
-    frame, face_found, ear_l, ear_r, mar, brow
+    frame, face_found, ear_l, ear_r, mar, brow, smile_lift, mouth_width,
+    eye_aspect_ratio_geo
     + --blendshapes 时追加 52 个 Blendshape 原始列（51 个动作 + neutral）
     + 对应的 52 个 <name>_smooth 列（3 帧居中滚动中值）
+
+几何特征的坐标系:
+    ear/mar/brow 沿用 W1 的归一化坐标比值（与历史数据可比）。
+    smile_lift/mouth_width/eye_aspect_ratio_geo 在像素坐标下计算，再除以像素脸宽
+    （isotropic，避免 16:9 拉伸）。
 
 加固点:
     - face_found 列：每帧都有一行，未检出为 0，特征列为 NaN
@@ -27,6 +33,7 @@ FaceTempo W1+W2 · extract_landmarks.py  (MediaPipe Tasks API, 1.x)
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 import time
@@ -49,8 +56,13 @@ IDX_RIGHT_EYE_UP, IDX_RIGHT_EYE_LOW = 386, 374
 IDX_MOUTH_UP, IDX_MOUTH_LOW = 13, 14
 IDX_MOUTH_LEFT, IDX_MOUTH_RIGHT = 78, 308
 IDX_BROW, IDX_BROW_REF = 107, 159
+IDX_FACE_LEFT, IDX_FACE_RIGHT = 234, 454
+IDX_MOUTH_CORNER_L, IDX_MOUTH_CORNER_R = 61, 291
 
-BASE_COLUMNS = ["frame", "face_found", "ear_l", "ear_r", "mar", "brow"]
+BASE_COLUMNS = [
+    "frame", "face_found", "ear_l", "ear_r", "mar", "brow",
+    "smile_lift", "mouth_width", "eye_aspect_ratio_geo",
+]
 
 # 见 KI-003：FaceLandmarker 的析构/close() 在 Windows 上会固定阻塞约 42 秒。
 # 用模块级列表保活，避免 main() 返回时局部变量被回收而触发析构。
@@ -103,6 +115,44 @@ def compute_features(lm) -> dict[str, float]:
         mar = float(np.clip(mar, 0.0, MAR_MAX))
     brow = abs(lm[IDX_BROW].y - lm[IDX_BROW_REF].y)
     return {"ear_l": ear_l, "ear_r": ear_r, "mar": mar, "brow": brow}
+
+
+def compute_geometry(lm, width: int, height: int) -> dict[str, float]:
+    """像素坐标下的几何微笑代理，避免归一化坐标在 16:9 下的各向异性拉伸。
+
+    smile_lift : (内眼角中点 y - 嘴角中点 y) / 脸宽；嘴角上提时变大。
+    mouth_width: |嘴角左 x - 嘴角右 x| / 脸宽；咧嘴时变大。
+    eye_aspect_ratio_geo: 左右眼上下眼睑垂直距离的均值 / 脸宽；睁眼时变大。
+    脸宽取左右脸颊点 234 / 454 的欧氏距离。
+    """
+    pts = [(p.x * width, p.y * height) for p in lm]
+    face_w = math.hypot(
+        pts[IDX_FACE_LEFT][0] - pts[IDX_FACE_RIGHT][0],
+        pts[IDX_FACE_LEFT][1] - pts[IDX_FACE_RIGHT][1],
+    )
+    if face_w < 1.0:
+        return {
+            "smile_lift": float("nan"),
+            "mouth_width": float("nan"),
+            "eye_aspect_ratio_geo": float("nan"),
+        }
+
+    eye_mid_y = (pts[IDX_LEFT_EYE_IN][1] + pts[IDX_RIGHT_EYE_IN][1]) / 2.0
+    mouth_mid_y = (pts[IDX_MOUTH_CORNER_L][1] + pts[IDX_MOUTH_CORNER_R][1]) / 2.0
+    smile_lift = (eye_mid_y - mouth_mid_y) / face_w
+    mouth_width = (
+        abs(pts[IDX_MOUTH_CORNER_L][0] - pts[IDX_MOUTH_CORNER_R][0]) / face_w
+    )
+    eye_open = (
+        abs(pts[IDX_LEFT_EYE_UP][1] - pts[IDX_LEFT_EYE_LOW][1])
+        + abs(pts[IDX_RIGHT_EYE_UP][1] - pts[IDX_RIGHT_EYE_LOW][1])
+    ) / 2.0
+    eye_aspect_ratio_geo = eye_open / face_w
+    return {
+        "smile_lift": smile_lift,
+        "mouth_width": mouth_width,
+        "eye_aspect_ratio_geo": eye_aspect_ratio_geo,
+    }
 
 
 def draw_landmarks(frame, lm) -> None:
@@ -264,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
             lm = result.face_landmarks[0]
             row["face_found"] = 1
             row.update(compute_features(lm))
+            row.update(compute_geometry(lm, width, height))
             draw_landmarks(frame, lm)
 
         if args.blendshapes and result.face_blendshapes:

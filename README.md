@@ -62,7 +62,7 @@ venv\Scripts\python.exe src\extract_landmarks.py --input data/raw/samples/adult_
 | 逐帧几何特征 | `outputs/features/features.csv` |
 | 特征曲线图 | `outputs/curves/curve.png` |
 
-CSV 列为 `frame, face_found, ear_l, ear_r, mar, brow`，**每帧一行**；未检出脸时 `face_found=0`、特征列为 NaN。
+CSV 列为 `frame, face_found, ear_l, ear_r, mar, brow, smile_lift, mouth_width`，**每帧一行**；未检出脸时 `face_found=0`、特征列为 NaN。加 `--blendshapes` 后再追加 52 个原始 Blendshape 与 52 个 `_smooth` 列。
 
 ### 后续阶段（未实现）
 
