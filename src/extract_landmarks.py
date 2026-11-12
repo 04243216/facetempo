@@ -4,6 +4,7 @@ FaceTempo W1+W2 · extract_landmarks.py  (MediaPipe Tasks API, 1.x)
 用法:
     python src/extract_landmarks.py --input data/raw/samples/adult_frontal.mp4
     python src/extract_landmarks.py --input video.mp4 --blendshapes
+    python src/extract_landmarks.py --input data/raw/samples/ --blendshapes   # 批量
 
 输入:
     <input>                       源视频
@@ -73,7 +74,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="FaceTempo W1/W2: 关键点叠加 + 几何特征 + (可选) Blendshape + 曲线"
     )
-    parser.add_argument("--input", type=Path, required=True, help="输入视频路径")
+    parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="输入视频文件或目录（目录则批量处理其中所有 mp4/mov/avi/mkv）",
+    )
     parser.add_argument(
         "--output_dir", type=Path, default=Path("outputs"), help="输出根目录（默认 outputs/）"
     )
@@ -236,24 +242,52 @@ def add_smoothed_columns(df: pd.DataFrame, bs_names: list[str]) -> pd.DataFrame:
     return pd.concat([df, smoothed], axis=1)
 
 
-def main(argv: list[str] | None = None) -> int:
-    t_main_start = time.perf_counter()
-    args = parse_args(argv)
+VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv"}
 
-    if not args.input.exists():
-        raise FileNotFoundError(f"输入视频不存在: {args.input}")
-    if not args.model.exists():
-        raise FileNotFoundError(f"模型不存在: {args.model}")
 
-    out_overlay = args.output_dir / "overlay" / "overlay.mp4"
-    out_csv = args.output_dir / "features" / "features.csv"
-    out_curve = args.output_dir / "curves" / "curve.png"
-    for p in (out_overlay.parent, out_csv.parent, out_curve.parent):
-        p.mkdir(parents=True, exist_ok=True)
+def collect_videos(path: Path) -> tuple[list[Path], bool]:
+    """返回 (视频列表, 是否目录模式)。目录模式按文件名排序。"""
+    if path.is_dir():
+        videos = sorted(
+            p for p in path.iterdir() if p.is_file() and p.suffix.lower() in VIDEO_EXTS
+        )
+        if not videos:
+            raise FileNotFoundError(f"目录中没有视频文件: {path}")
+        return videos, True
+    if path.is_file():
+        return [path], False
+    raise FileNotFoundError(f"输入不存在: {path}")
 
-    cap = cv2.VideoCapture(str(args.input))
+
+def process_video(
+    video: Path,
+    output_dir: Path,
+    model: Path,
+    blendshapes: bool,
+    batch: bool,
+) -> dict:
+    """处理单个视频，产物落盘后返回摘要（所有文件在返回前已关闭/flush）。
+
+    命名规则：
+        目录批量模式 -> <stem>_overlay.mp4 / <stem>_features.csv / <stem>_curve.png
+        单文件模式   -> overlay.mp4 / features.csv / curve.png（保持 W1/W2 兼容）
+    """
+    stem = video.stem
+    if batch:
+        out_overlay = output_dir / "overlay" / f"{stem}_overlay.mp4"
+        out_csv = output_dir / "features" / f"{stem}_features.csv"
+        out_curve = output_dir / "curves" / f"{stem}_curve.png"
+    else:
+        out_overlay = output_dir / "overlay" / "overlay.mp4"
+        out_csv = output_dir / "features" / "features.csv"
+        out_curve = output_dir / "curves" / "curve.png"
+
+    for folder in (out_overlay.parent, out_csv.parent, out_curve.parent):
+        folder.mkdir(parents=True, exist_ok=True)
+
+    cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
-        raise RuntimeError(f"无法打开视频: {args.input}")
+        raise RuntimeError(f"无法打开视频: {video}")
 
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -261,6 +295,7 @@ def main(argv: list[str] | None = None) -> int:
     if not fps or fps <= 1:
         fps = 25.0
     if width <= 0 or height <= 0:
+        cap.release()
         raise RuntimeError(f"无法读取视频尺寸: {width}x{height}")
 
     writer = cv2.VideoWriter(
@@ -271,10 +306,10 @@ def main(argv: list[str] | None = None) -> int:
         raise RuntimeError(f"无法创建输出视频: {out_overlay}")
 
     options = mp.tasks.vision.FaceLandmarkerOptions(
-        base_options=mp.tasks.BaseOptions(model_asset_path=str(args.model)),
+        base_options=mp.tasks.BaseOptions(model_asset_path=str(model)),
         running_mode=mp.tasks.vision.RunningMode.VIDEO,
         num_faces=1,
-        output_face_blendshapes=args.blendshapes,
+        output_face_blendshapes=blendshapes,
         output_facial_transformation_matrixes=False,
     )
 
@@ -287,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 注意：这里刻意不用 with，也不调用 landmarker.close()。
     # mediapipe 1.2.2 在 Windows 上 close() 会固定阻塞约 42 秒（与帧数无关），
-    # 详见 docs/known_issues.md KI-003。CLI 进程退出时由系统回收资源。
+    # 详见 docs/known_issues.md KI-003。每个视频新建实例并保活，进程退出时统一回收。
     init_start = time.perf_counter()
     landmarker = mp.tasks.vision.FaceLandmarker.create_from_options(options)
     _LANDMARKER_KEEPALIVE.append(landmarker)
@@ -317,7 +352,7 @@ def main(argv: list[str] | None = None) -> int:
             row.update(compute_geometry(lm, width, height))
             draw_landmarks(frame, lm)
 
-        if args.blendshapes and result.face_blendshapes:
+        if blendshapes and result.face_blendshapes:
             shapes = result.face_blendshapes[0]
             if not bs_names:
                 bs_names = [
@@ -340,33 +375,85 @@ def main(argv: list[str] | None = None) -> int:
     df = add_smoothed_columns(df, bs_names)
     df.to_csv(out_csv, index=False)
 
-    plot_curves(df, out_curve, args.input.stem)
+    plot_curves(df, out_curve, video.stem)
 
-    total = len(df)
-    found = int(df["face_found"].sum())
     mar_valid = df["mar"].dropna()
-    infer = np.asarray(infer_ms)
+    return {
+        "input": video,
+        "frames": len(df),
+        "found": int(df["face_found"].sum()),
+        "columns": len(df.columns),
+        "bs_count": len(bs_names),
+        "mar_min": float(mar_valid.min()) if len(mar_valid) else float("nan"),
+        "mar_max": float(mar_valid.max()) if len(mar_valid) else float("nan"),
+        "init_s": init_s,
+        "infer_mean": float(np.mean(infer_ms)) if infer_ms else float("nan"),
+        "loop_ms": loop_ms,
+        "overlay": out_overlay,
+        "features": out_csv,
+        "curve": out_curve,
+    }
 
-    print(f"input: {args.input}")
-    print(f"frames: {total}, face_found: {found} ({found / max(total, 1):.1%})")
-    print(f"mar NaN: {int(df['mar'].isna().sum())} / {total}")
-    if len(mar_valid):
-        print(f"mar range: {mar_valid.min():.4f} - {mar_valid.max():.4f}")
-    if args.blendshapes:
-        print(f"blendshapes: {len(bs_names)} raw + {len(bs_names)} smooth")
-    print(f"columns: {len(df.columns)}")
-    print(
-        f"timing: init {init_s:.2f}s, infer avg {infer.mean():.1f} ms/frame, "
-        f"p95 {np.percentile(infer, 95):.1f} ms, "
-        f"loop avg {loop_ms / max(total, 1):.1f} ms/frame, "
-        f"{1000.0 / (loop_ms / max(total, 1)):.1f} fps"
-    )
-    print(f"overlay: {out_overlay}")
-    print(f"features: {out_csv}")
-    print(f"curve: {out_curve}")
+
+def main(argv: list[str] | None = None) -> int:
+    t_main_start = time.perf_counter()
+    args = parse_args(argv)
+
+    if not args.model.exists():
+        raise FileNotFoundError(f"模型不存在: {args.model}")
+
+    videos, batch = collect_videos(args.input)
+    summaries: list[dict] = []
+    failures: list[tuple[str, str]] = []
+
+    for i, video in enumerate(videos, start=1):
+        if batch:
+            print(f"[{i}/{len(videos)}] {video.name}", flush=True)
+        else:
+            print(f"input: {video}", flush=True)
+
+        try:
+            summary = process_video(
+                video, args.output_dir, args.model, args.blendshapes, batch
+            )
+        except Exception as exc:  # 单条失败不阻断整批
+            failures.append((video.name, str(exc)))
+            print(f"  FAILED: {exc}", flush=True)
+            continue
+
+        summaries.append(summary)
+        total = summary["frames"]
+        print(
+            f"  frames: {total}, face_found: {summary['found']} "
+            f"({summary['found'] / max(total, 1):.1%}), columns: {summary['columns']}"
+        )
+        if np.isfinite(summary["mar_min"]):
+            print(f"  mar range: {summary['mar_min']:.4f} - {summary['mar_max']:.4f}")
+        if args.blendshapes:
+            print(f"  blendshapes: {summary['bs_count']} raw + {summary['bs_count']} smooth")
+        print(
+            f"  timing: init {summary['init_s']:.2f}s, "
+            f"infer avg {summary['infer_mean']:.1f} ms/frame, "
+            f"loop {summary['loop_ms'] / max(total, 1):.1f} ms/frame "
+            f"({1000.0 / (summary['loop_ms'] / max(total, 1)):.1f} fps)"
+        )
+        print(f"  features: {summary['features']}")
+
+        if not batch:
+            print(f"  overlay: {summary['overlay']}")
+            print(f"  curve: {summary['curve']}")
+
+    wall = time.perf_counter() - t_main_start
+    if batch:
+        print(
+            f"batch done: {len(summaries)} ok, {len(failures)} failed, wall {wall:.1f}s"
+        )
+        for name, error in failures:
+            print(f"  FAILED {name}: {error}")
+
+    print(f"internal total: {wall:.2f}s")
     print("done")
-    print(f"internal total: {time.perf_counter() - t_main_start:.2f}s")
-    return 0
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

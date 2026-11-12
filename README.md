@@ -50,19 +50,35 @@ venv\Scripts\python.exe src\extract_landmarks.py --input data/raw/samples/adult_
 
 | 参数 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
-| `--input` | 是 | — | 输入视频路径 |
+| `--input` | 是 | — | 输入视频文件**或目录** |
 | `--output_dir` | 否 | `outputs` | 输出根目录 |
 | `--model` | 否 | `models/face_landmarker.task` | 关键点模型 |
+| `--blendshapes` | 否 | 关闭 | 追加 52 个 Blendshape 及 `_smooth` 列 |
 
-产物（文件名固定，重复运行会覆盖）：
+批量处理目录（按文件名排序，单条失败不阻断整批）：
 
-| 产物 | 位置 |
-|---|---|
-| 关键点叠加视频 | `outputs/overlay/overlay.mp4` |
-| 逐帧几何特征 | `outputs/features/features.csv` |
-| 特征曲线图 | `outputs/curves/curve.png` |
+```powershell
+venv\Scripts\python.exe src\extract_landmarks.py --input data/raw/samples --blendshapes
+```
 
-CSV 列为 `frame, face_found, ear_l, ear_r, mar, brow, smile_lift, mouth_width`，**每帧一行**；未检出脸时 `face_found=0`、特征列为 NaN。加 `--blendshapes` 后再追加 52 个原始 Blendshape 与 52 个 `_smooth` 列。
+产物命名：
+
+| 模式 | 叠加视频 | 特征表 | 曲线 |
+|---|---|---|---|
+| 单文件 | `outputs/overlay/overlay.mp4` | `outputs/features/features.csv` | `outputs/curves/curve.png` |
+| 目录批量 | `outputs/overlay/<stem>_overlay.mp4` | `outputs/features/<stem>_features.csv` | `outputs/curves/<stem>_curve.png` |
+
+### W3：肌肉联动诊断（批量）
+
+```powershell
+venv\Scripts\python.exe src\plot_dynamics.py
+```
+
+默认读取 `outputs/features/*_features.csv`，逐条输出：
+`outputs/curves/<stem>_dynamics.png`，终端打印每条视频的滞后、r 值，以及起势/维持是否一致。
+单文件模式：`--csv outputs/features/adult_frontal_features.csv`。
+
+CSV 列为 `frame, face_found, ear_l, ear_r, mar, brow, smile_lift, mouth_width, eye_aspect_ratio_geo`，**每帧一行**；未检出脸时 `face_found=0`、特征列为 NaN。加 `--blendshapes` 后再追加 52 个原始 Blendshape 与 52 个 `_smooth` 列。
 
 ### 后续阶段（未实现）
 
