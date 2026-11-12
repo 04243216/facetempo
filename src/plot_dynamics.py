@@ -239,7 +239,7 @@ def analyze_file(csv_path: Path, out_path: Path, fps: float,
             continue
         res = analyze(mouth[lo:hi], eye[lo:hi], max_lag)
         events.append({"peak": int(frames[p]), "lo": int(frames[lo]),
-                       "hi": int(frames[hi]), **res})
+                       "hi": int(frames[hi - 1]), **res})
 
     name = csv_path.stem[: -len("_features")] if csv_path.stem.endswith("_features") else csv_path.stem
     return {
