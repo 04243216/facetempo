@@ -6,6 +6,7 @@
 |---|---|---|---|
 | KI-001 | 侧脸/大角度转头时关键点整体偏移，几何特征爆炸 | 开放 | W2 |
 | KI-002 | 几何门槛（分母下限）无法识别“检测到但位置错误”的关键点 | 开放 | W2 |
+| KI-003 | FaceLandmarker 的 close()/析构在 Windows 上固定阻塞约 42 秒 | 已绕过（需遵守用法） | W2 |
 
 ---
 
@@ -56,3 +57,40 @@ venv\Scripts\python.exe src\extract_landmarks.py --input data/raw/samples/bad_sa
 - 无效场景：整组关键点平移或旋转（KI-001），比值仍稳定，门槛不触发。
 
 因此 W2 的质量控制必须放在「关键点层面」（可见性、人脸框、时序连续性），而不是继续在「比值层面」加阈值。
+
+---
+
+## KI-003 FaceLandmarker 在 Windows 上 close()/析构固定阻塞约 42 秒
+
+**现象**：
+
+- `landmarker.close()` 单独计时 **42.08 – 42.11 秒**，N=1、N=10、N=90 帧完全一样，与视频长度无关。
+- 不显式调用 `close()`、实例又是 `main()` 的局部变量时，`main` 返回会触发析构，同样卡 42 秒：日志里 `done` 已经打印，进程却迟迟不退出。
+- 实测外部墙钟 49.8 s，进程内部计时只有 6.34 s，差值正好是 42 秒。
+
+**定位过程**（排除法）：
+
+| 测试 | 结果 |
+|---|---|
+| `python src/extract_landmarks.py --help` | 1.38 s |
+| 只 import 模块 | 0.90 s |
+| 黑帧 300 次 detect + `os._exit` | 1.49 s |
+| 真视频 272 帧 detect + `os._exit` | 5.35 s（内部 4.46 s） |
+| 90 帧真实管线（写入 + CSV + 画图）+ `os._exit` | 9.4 s |
+| 显式 `landmarker.close()` | **42.1 s** |
+
+结论：推理、解码、写视频、pandas、matplotlib 都不慢，时间全部花在 mediapipe 运行时的关闭路径。
+
+**原因**：mediapipe 1.2.2 在 Windows 上关闭 TFLite/XNNPACK 相关线程与资源时会固定等待约 40 秒（实现层面的阻塞，不是我们的代码死锁）。
+
+**处理方式**（当前代码已采用）：
+
+1. 不调用 `landmarker.close()`，也不使用 `with` 语句。
+2. 用模块级 `_LANDMARKER_KEEPALIVE` 列表持有实例，防止局部变量离开作用域时触发析构。
+3. CLI 入口在 CSV / 视频 / 图片全部落盘并 flush 后调用 `os._exit(code)`，跳过解释器与 DLL 清理。
+4. W10 的 Gradio 应用属于长驻进程：只创建一次实例并复用，**不要每个请求新建/关闭**。
+
+**验收**：321 帧全流程 wall **14.0 s**（内部 12.7 s），修复前为 55 s。
+
+**风险提示**：`os._exit` 会跳过 atexit 与缓冲区刷新，因此退出前必须显式 `sys.stdout.flush()`，并确保所有文件对象已关闭。当前脚本在 `to_csv`、`VideoWriter.release()`、`savefig` 之后才退出，满足该前提。
+

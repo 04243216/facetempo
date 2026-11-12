@@ -1,9 +1,9 @@
 """
-FaceTempo W1 · extract_landmarks.py  (MediaPipe Tasks API, 1.x)
+FaceTempo W1+W2 · extract_landmarks.py  (MediaPipe Tasks API, 1.x)
 
 用法:
     python src/extract_landmarks.py --input data/raw/samples/adult_frontal.mp4
-    python src/extract_landmarks.py --input video.mp4 --output_dir outputs
+    python src/extract_landmarks.py --input video.mp4 --blendshapes
 
 输入:
     <input>                       源视频
@@ -14,6 +14,11 @@ FaceTempo W1 · extract_landmarks.py  (MediaPipe Tasks API, 1.x)
     outputs/features/features.csv
     outputs/curves/curve.png
 
+特征列:
+    frame, face_found, ear_l, ear_r, mar, brow
+    + --blendshapes 时追加 52 个 Blendshape 原始列（51 个动作 + neutral）
+    + 对应的 52 个 <name>_smooth 列（3 帧居中滚动中值）
+
 加固点:
     - face_found 列：每帧都有一行，未检出为 0，特征列为 NaN
     - 分母下限：眼角/嘴角横向距离 < 1e-3（约 1px）时该帧特征判为 NaN
@@ -22,6 +27,9 @@ FaceTempo W1 · extract_landmarks.py  (MediaPipe Tasks API, 1.x)
 from __future__ import annotations
 
 import argparse
+import os
+import sys
+import time
 from pathlib import Path
 
 import cv2
@@ -31,6 +39,7 @@ import pandas as pd
 
 MIN_DEN = 1e-3      # 归一化坐标下的最小分母，低于此值视为关键点退化
 MAR_MAX = 2.0       # mar 截断上限
+SMOOTH_WINDOW = 3   # Blendshape 中值滤波窗口（帧）
 
 # 关键点索引（与旧 FaceMesh 的公开布局一致）
 IDX_LEFT_EYE_OUT, IDX_LEFT_EYE_IN = 33, 133
@@ -41,10 +50,16 @@ IDX_MOUTH_UP, IDX_MOUTH_LOW = 13, 14
 IDX_MOUTH_LEFT, IDX_MOUTH_RIGHT = 78, 308
 IDX_BROW, IDX_BROW_REF = 107, 159
 
+BASE_COLUMNS = ["frame", "face_found", "ear_l", "ear_r", "mar", "brow"]
+
+# 见 KI-003：FaceLandmarker 的析构/close() 在 Windows 上会固定阻塞约 42 秒。
+# 用模块级列表保活，避免 main() 返回时局部变量被回收而触发析构。
+_LANDMARKER_KEEPALIVE: list = []
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="FaceTempo W1: 关键点叠加视频 + 逐帧几何特征 + 曲线图"
+        description="FaceTempo W1/W2: 关键点叠加 + 几何特征 + (可选) Blendshape + 曲线"
     )
     parser.add_argument("--input", type=Path, required=True, help="输入视频路径")
     parser.add_argument(
@@ -55,6 +70,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=Path("models/face_landmarker.task"),
         help="face_landmarker.task 模型路径",
+    )
+    parser.add_argument(
+        "--blendshapes",
+        action="store_true",
+        help="同时输出 52 个 Blendshape 动作系数及其 3 帧中值滤波结果",
     )
     return parser.parse_args(argv)
 
@@ -106,9 +126,7 @@ def plot_curves(df: pd.DataFrame, out_png: Path, source_name: str) -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, (ax_mar, ax_ear, ax_brow) = plt.subplots(
-        3, 1, figsize=(12, 7), sharex=True
-    )
+    fig, (ax_mar, ax_ear, ax_brow) = plt.subplots(3, 1, figsize=(12, 7), sharex=True)
 
     for ax in (ax_mar, ax_ear, ax_brow):
         missing = df["face_found"] == 0
@@ -126,7 +144,7 @@ def plot_curves(df: pd.DataFrame, out_png: Path, source_name: str) -> None:
 
     ax_mar.plot(df["frame"], df["mar"], color="#d62728", lw=1.4)
     ax_mar.set_ylabel("mar")
-    ax_mar.set_title(f"FaceTempo W1 features - {source_name}")
+    ax_mar.set_title(f"FaceTempo features - {source_name}")
 
     ax_ear.plot(df["frame"], df["ear_l"], lw=1.1, label="ear_l")
     ax_ear.plot(df["frame"], df["ear_r"], lw=1.1, label="ear_r")
@@ -152,7 +170,24 @@ def plot_curves(df: pd.DataFrame, out_png: Path, source_name: str) -> None:
     plt.close(fig)
 
 
+def add_smoothed_columns(df: pd.DataFrame, bs_names: list[str]) -> pd.DataFrame:
+    """对 Blendshape 原始列做 3 帧居中滚动中值，生成 <name>_smooth。
+
+    min_periods=1 保证视频首尾帧也有值；face_found=0 产生的 NaN 不参与中值计算。
+    """
+    if not bs_names:
+        return df
+    smoothed = (
+        df[bs_names]
+        .rolling(window=SMOOTH_WINDOW, center=True, min_periods=1)
+        .median()
+    )
+    smoothed.columns = [f"{name}_smooth" for name in bs_names]
+    return pd.concat([df, smoothed], axis=1)
+
+
 def main(argv: list[str] | None = None) -> int:
+    t_main_start = time.perf_counter()
     args = parse_args(argv)
 
     if not args.input.exists():
@@ -189,44 +224,69 @@ def main(argv: list[str] | None = None) -> int:
         base_options=mp.tasks.BaseOptions(model_asset_path=str(args.model)),
         running_mode=mp.tasks.vision.RunningMode.VIDEO,
         num_faces=1,
-        output_face_blendshapes=False,
+        output_face_blendshapes=args.blendshapes,
         output_facial_transformation_matrixes=False,
     )
 
     rows: list[dict[str, float]] = []
+    bs_names: list[str] = []
+    infer_ms: list[float] = []
     frame_id = 0
     timestamp_ms = 0
     step_ms = max(1, int(round(1000.0 / fps)))
 
-    with mp.tasks.vision.FaceLandmarker.create_from_options(options) as landmarker:
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
+    # 注意：这里刻意不用 with，也不调用 landmarker.close()。
+    # mediapipe 1.2.2 在 Windows 上 close() 会固定阻塞约 42 秒（与帧数无关），
+    # 详见 docs/known_issues.md KI-003。CLI 进程退出时由系统回收资源。
+    init_start = time.perf_counter()
+    landmarker = mp.tasks.vision.FaceLandmarker.create_from_options(options)
+    _LANDMARKER_KEEPALIVE.append(landmarker)
+    init_s = time.perf_counter() - init_start
 
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            mp_image = mp.Image(
-                image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb)
-            )
-            result = landmarker.detect_for_video(mp_image, timestamp_ms)
-            timestamp_ms += step_ms
+    loop_start = time.perf_counter()
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
 
-            row: dict[str, float] = {"frame": frame_id, "face_found": 0}
-            if result.face_landmarks:
-                lm = result.face_landmarks[0]
-                row["face_found"] = 1
-                row.update(compute_features(lm))
-                draw_landmarks(frame, lm)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(
+            image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb)
+        )
 
-            rows.append(row)
-            writer.write(frame)
-            frame_id += 1
+        t0 = time.perf_counter()
+        result = landmarker.detect_for_video(mp_image, timestamp_ms)
+        infer_ms.append((time.perf_counter() - t0) * 1000.0)
+        timestamp_ms += step_ms
 
+        row: dict[str, float] = {"frame": frame_id, "face_found": 0}
+        if result.face_landmarks:
+            lm = result.face_landmarks[0]
+            row["face_found"] = 1
+            row.update(compute_features(lm))
+            draw_landmarks(frame, lm)
+
+        if args.blendshapes and result.face_blendshapes:
+            shapes = result.face_blendshapes[0]
+            if not bs_names:
+                bs_names = [
+                    "neutral" if c.category_name == "_neutral" else c.category_name
+                    for c in shapes
+                ]
+            for name, item in zip(bs_names, shapes):
+                row[name] = item.score
+
+        rows.append(row)
+        writer.write(frame)
+        frame_id += 1
+
+    loop_ms = (time.perf_counter() - loop_start) * 1000.0
     cap.release()
     writer.release()
 
-    columns = ["frame", "face_found", "ear_l", "ear_r", "mar", "brow"]
-    df = pd.DataFrame(rows, columns=columns)
+    df = pd.DataFrame(rows)
+    df = df.reindex(columns=BASE_COLUMNS + bs_names)
+    df = add_smoothed_columns(df, bs_names)
     df.to_csv(out_csv, index=False)
 
     plot_curves(df, out_curve, args.input.stem)
@@ -234,19 +294,34 @@ def main(argv: list[str] | None = None) -> int:
     total = len(df)
     found = int(df["face_found"].sum())
     mar_valid = df["mar"].dropna()
+    infer = np.asarray(infer_ms)
+
     print(f"input: {args.input}")
     print(f"frames: {total}, face_found: {found} ({found / max(total, 1):.1%})")
     print(f"mar NaN: {int(df['mar'].isna().sum())} / {total}")
     if len(mar_valid):
         print(f"mar range: {mar_valid.min():.4f} - {mar_valid.max():.4f}")
-    else:
-        print("mar range: no valid frames")
+    if args.blendshapes:
+        print(f"blendshapes: {len(bs_names)} raw + {len(bs_names)} smooth")
+    print(f"columns: {len(df.columns)}")
+    print(
+        f"timing: init {init_s:.2f}s, infer avg {infer.mean():.1f} ms/frame, "
+        f"p95 {np.percentile(infer, 95):.1f} ms, "
+        f"loop avg {loop_ms / max(total, 1):.1f} ms/frame, "
+        f"{1000.0 / (loop_ms / max(total, 1)):.1f} fps"
+    )
     print(f"overlay: {out_overlay}")
     print(f"features: {out_csv}")
     print(f"curve: {out_curve}")
     print("done")
+    print(f"internal total: {time.perf_counter() - t_main_start:.2f}s")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    code = main()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # 见 docs/known_issues.md KI-003：mediapipe 1.2.2 在 Windows 上析构/close 会阻塞约 42 秒。
+    # 产物此时已全部落盘（CSV/视频/图片均已关闭），直接退出，避免无意义等待。
+    os._exit(code)
