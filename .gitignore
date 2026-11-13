@@ -6,6 +6,7 @@ outputs/features/
 outputs/curves/
 outputs/w4_clean/
 outputs/w4_final/
+outputs/holdout/
 
 # reports / figures 允许提交（小图、报告），保留目录占位
 !outputs/reports/.gitkeep

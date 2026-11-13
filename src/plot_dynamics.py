@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import math
 from pathlib import Path
 
@@ -41,6 +42,7 @@ R_THRESHOLD = 0.6
 EVENT_HALF_WINDOW_SEC = 1.5
 BASELINE_SEC = 1.0
 ONSET_MAINTENANCE_GAP_SEC = 0.4
+TARGET_FPS = 25.0          # 微颤指标统一重采样到该帧率，消除采样率混杂
 
 HEAD_SPEED_MAX = 0.5        # 脸宽/秒；超过视为大幅甩头
 HEAD_DEV_MAX = 1.5          # 相对中位位置的最大偏移；慢漂移可接受，只拦镜头级位移
@@ -154,7 +156,7 @@ def jitter_stats(signal: np.ndarray, fps: float,
 
     速度 = |一阶差分|均值 × fps
     Jerk = |二阶差分|均值 × fps²
-    归一化 Jerk = Jerk / (std × fps²)，去掉动作幅度的影响。
+    归一化 Jerk = Jerk / std，去掉动作幅度的影响（调用前已统一重采样到 TARGET_FPS）。
     屏蔽规则：差分窗口内任意端点被 mask 标记则丢弃该差分。
     """
     signal = np.asarray(signal, dtype=float)
@@ -171,8 +173,23 @@ def jitter_stats(signal: np.ndarray, fps: float,
     speed = float(np.mean(np.abs(d1[~bad1]))) * fps if (~bad1).any() else float("nan")
     jerk = float(np.mean(np.abs(d2[~bad2]))) * fps * fps if (~bad2).any() else float("nan")
     std = float(np.std(signal[~mask])) if (~mask).any() else float("nan")
-    norm_jerk = jerk / (std * fps * fps) if np.isfinite(std) and std > 0 else float("nan")
+    norm_jerk = jerk / std if np.isfinite(std) and std > 0 else float("nan")
     return speed, jerk, norm_jerk
+
+
+def resample_signal(signal: np.ndarray, fps: float,
+                    mask: np.ndarray | None = None,
+                    target_fps: float = TARGET_FPS):
+    """线性插值到统一帧率；mask 以 0.5 为阈值同步重采样。"""
+    signal = np.asarray(signal, dtype=float)
+    n = len(signal)
+    t = np.arange(n) / fps
+    t_new = np.arange(0, t[-1], 1.0 / target_fps)
+    xs = np.interp(t_new, t, signal)
+    ms = None
+    if mask is not None:
+        ms = np.interp(t_new, t, np.asarray(mask, dtype=float)) > 0.5
+    return xs, ms
 
 
 def hf_ratio(signal: np.ndarray, fps: float, lo: float = 5.0, hi: float = 12.0) -> float:
@@ -200,17 +217,33 @@ def group_of(name: str) -> str:
 
 def permutation_test(a: list[float], b: list[float], n_perm: int = 20000,
                      seed: int = 0) -> tuple[float, float]:
-    """单侧置换检验：H1 = mean(a) > mean(b)。返回 (差值, p)。"""
+    """单侧置换检验：H1 = mean(a) > mean(b)。
+
+    组合数 <= 200000 时做精确枚举；否则蒙特卡洛（带 1e-9 浮点容差）。
+    """
     a_arr = np.asarray(a, dtype=float)
     b_arr = np.asarray(b, dtype=float)
     observed = float(np.mean(a_arr) - np.mean(b_arr))
     pool = np.concatenate([a_arr, b_arr])
+    n = len(pool)
     n_a = len(a_arr)
+    total = math.comb(n, n_a)
+
+    if total <= 200_000:
+        count = 0
+        for idx in itertools.combinations(range(n), n_a):
+            mask = np.zeros(n, dtype=bool)
+            mask[list(idx)] = True
+            diff = float(np.mean(pool[mask]) - np.mean(pool[~mask]))
+            if diff >= observed - 1e-9:
+                count += 1
+        return observed, count / total
+
     rng = np.random.default_rng(seed)
     count = 0
     for _ in range(n_perm):
         perm = rng.permutation(pool)
-        if np.mean(perm[:n_a]) - np.mean(perm[n_a:]) >= observed:
+        if np.mean(perm[:n_a]) - np.mean(perm[n_a:]) >= observed - 1e-9:
             count += 1
     return observed, (count + 1) / (n_perm + 1)
 
@@ -387,6 +420,10 @@ def analyze_file(csv_path: Path, out_path: Path, fps: float, video_path: Path | 
         blink_mask[:-shift] |= blink[shift:]
     blink_pct = float(np.mean(blink))
 
+    # 统一重采样到 TARGET_FPS，消除 24/25/60 fps 采样率混杂
+    mouth_rs, _ = resample_signal(mouth_raw, fps)
+    eye_rs, blink_rs = resample_signal(eye_raw, fps, blink_mask)
+
     overall = analyze(mouth, eye, max_lag)
 
     # ---- 数据质量门控 ----
@@ -438,8 +475,12 @@ def analyze_file(csv_path: Path, out_path: Path, fps: float, video_path: Path | 
 
         res = analyze(seg_m, seg_e, max_lag)
         ci_lo, ci_hi = bootstrap_r_ci(seg_m, seg_e, res["lag"], n_boot, seed=p)
-        speed_m, jerk_m, _ = jitter_stats(mouth_raw[lo:hi], fps)
-        speed_e, jerk_e, _ = jitter_stats(eye_raw[lo:hi], fps, blink_mask[lo:hi])
+        e0 = frames[lo] / fps
+        e1 = frames[hi - 1] / fps
+        i0 = max(0, int(round(e0 * TARGET_FPS)))
+        i1 = min(len(mouth_rs), int(round(e1 * TARGET_FPS)) + 1)
+        speed_m, jerk_m, _ = jitter_stats(mouth_rs[i0:i1], TARGET_FPS)
+        speed_e, jerk_e, _ = jitter_stats(eye_rs[i0:i1], TARGET_FPS, blink_rs[i0:i1])
 
         events.append({
             "peak": int(frames[p]), "lo": int(frames[lo]), "hi": int(frames[hi - 1]),
@@ -449,10 +490,10 @@ def analyze_file(csv_path: Path, out_path: Path, fps: float, video_path: Path | 
             "ci_lo": ci_lo, "ci_hi": ci_hi, **res,
         })
 
-    speed_m_all, jerk_m_all, norm_jerk_m = jitter_stats(mouth_raw, fps)
-    speed_e_all, jerk_e_all, norm_jerk_e = jitter_stats(eye_raw, fps, blink_mask)
-    hf_m = hf_ratio(mouth_raw, fps)
-    hf_e = hf_ratio(eye_raw, fps)
+    speed_m_all, jerk_m_all, norm_jerk_m = jitter_stats(mouth_rs, TARGET_FPS)
+    speed_e_all, jerk_e_all, norm_jerk_e = jitter_stats(eye_rs, TARGET_FPS, blink_rs)
+    hf_m = hf_ratio(mouth_rs, TARGET_FPS)
+    hf_e = hf_ratio(eye_rs, TARGET_FPS)
 
     name = csv_path.stem[: -len("_features")] if csv_path.stem.endswith("_features") else csv_path.stem
     gates_ok = not gate_reasons
@@ -491,10 +532,10 @@ def print_summary(summary: dict, fps: float, source: str | None) -> dict:
         f"{'OK' if not summary['gate_reasons'] else 'INVALID: ' + ', '.join(summary['gate_reasons'])}"
     )
     print(
-        f"  jitter: mouth speed={summary['speed_m']:.2f}/s jerk={summary['jerk_m']:.2f}/s^2 "
-        f"norm={summary['norm_jerk_m']:.3f} | "
+        f"  jitter (@{TARGET_FPS:g}fps): mouth speed={summary['speed_m']:.2f}/s "
+        f"jerk={summary['jerk_m']:.2f}/s^2 norm={summary['norm_jerk_m']:.2f} | "
         f"eye speed={summary['speed_e']:.2f}/s jerk={summary['jerk_e']:.2f}/s^2 "
-        f"norm={summary['norm_jerk_e']:.3f}"
+        f"norm={summary['norm_jerk_e']:.2f}"
     )
     print(
         f"  hf energy (5-12 Hz): mouth={summary['hf_m']:.3f}, eye={summary['hf_e']:.3f} "
@@ -567,7 +608,7 @@ def plot_jitter(rows: list[dict], out_path: Path) -> None:
                 label="mouth norm jerk", color="#2e7d32")
     ax_norm.bar(x + width / 2, [r["norm_jerk_e"] for r in rows], width,
                 label="eye norm jerk", color="#1565c0")
-    ax_norm.set_ylabel("jerk / (std x fps^2)")
+    ax_norm.set_ylabel("jerk / std (1/s^2)")
     ax_norm.set_title("Amplitude-normalized micro-jitter (comparable)")
     ax_norm.set_xticks(x)
     ax_norm.set_xticklabels(names, rotation=20, ha="right", fontsize=8)
