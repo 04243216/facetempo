@@ -4,6 +4,7 @@ data/processed/
 outputs/overlay/
 outputs/features/
 outputs/curves/
+outputs/w4_clean/
 
 # reports / figures 允许提交（小图、报告），保留目录占位
 !outputs/reports/.gitkeep
