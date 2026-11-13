@@ -17,7 +17,7 @@ FaceTempo W1+W2 · extract_landmarks.py  (MediaPipe Tasks API, 1.x)
 
 特征列:
     frame, face_found, ear_l, ear_r, mar, brow, smile_lift, mouth_width,
-    eye_aspect_ratio_geo
+    eye_aspect_ratio_geo, face_cx, face_cy, face_w, face_h
     + --blendshapes 时追加 52 个 Blendshape 原始列（51 个动作 + neutral）
     + 对应的 52 个 <name>_smooth 列（3 帧居中滚动中值）
 
@@ -59,10 +59,12 @@ IDX_MOUTH_LEFT, IDX_MOUTH_RIGHT = 78, 308
 IDX_BROW, IDX_BROW_REF = 107, 159
 IDX_FACE_LEFT, IDX_FACE_RIGHT = 234, 454
 IDX_MOUTH_CORNER_L, IDX_MOUTH_CORNER_R = 61, 291
+IDX_FOREHEAD, IDX_CHIN = 10, 152
 
 BASE_COLUMNS = [
     "frame", "face_found", "ear_l", "ear_r", "mar", "brow",
     "smile_lift", "mouth_width", "eye_aspect_ratio_geo",
+    "face_cx", "face_cy", "face_w", "face_h",
 ]
 
 # 见 KI-003：FaceLandmarker 的析构/close() 在 Windows 上会固定阻塞约 42 秒。
@@ -141,6 +143,10 @@ def compute_geometry(lm, width: int, height: int) -> dict[str, float]:
             "smile_lift": float("nan"),
             "mouth_width": float("nan"),
             "eye_aspect_ratio_geo": float("nan"),
+            "face_cx": float("nan"),
+            "face_cy": float("nan"),
+            "face_w": float("nan"),
+            "face_h": float("nan"),
         }
 
     eye_mid_y = (pts[IDX_LEFT_EYE_IN][1] + pts[IDX_RIGHT_EYE_IN][1]) / 2.0
@@ -154,10 +160,17 @@ def compute_geometry(lm, width: int, height: int) -> dict[str, float]:
         + abs(pts[IDX_RIGHT_EYE_UP][1] - pts[IDX_RIGHT_EYE_LOW][1])
     ) / 2.0
     eye_aspect_ratio_geo = eye_open / face_w
+    face_h = abs(pts[IDX_CHIN][1] - pts[IDX_FOREHEAD][1])
+    face_cx = (pts[IDX_FACE_LEFT][0] + pts[IDX_FACE_RIGHT][0]) / 2.0
+    face_cy = (pts[IDX_FOREHEAD][1] + pts[IDX_CHIN][1]) / 2.0
     return {
         "smile_lift": smile_lift,
         "mouth_width": mouth_width,
         "eye_aspect_ratio_geo": eye_aspect_ratio_geo,
+        "face_cx": face_cx,
+        "face_cy": face_cy,
+        "face_w": face_w,
+        "face_h": face_h,
     }
 
 

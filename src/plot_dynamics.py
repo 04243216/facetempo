@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 
 import cv2
@@ -41,9 +42,10 @@ EVENT_HALF_WINDOW_SEC = 1.5
 BASELINE_SEC = 1.0
 ONSET_MAINTENANCE_GAP_SEC = 0.4
 
-MOTION_MAX = 2.0
-EYE_AGREEMENT_MAX = -0.5
-MOUTH_STD_MIN = 0.05
+HEAD_SPEED_MAX = 0.5        # 脸宽/秒；超过视为大幅甩头
+HEAD_DEV_MAX = 0.6          # 相对中位位置的最大偏移（脸宽）
+EYE_STD_MIN = 0.008         # 眼通道标准差低于此值时不计算一致性，标记 N/A
+EYE_AGREEMENT_MAX = 0.0     # 几何 EAR 与 Blendshape squint 必须负相关
 
 VIDEO_EXTS = (".mp4", ".mov", ".avi", ".mkv")
 
@@ -176,25 +178,81 @@ def hf_ratio(signal: np.ndarray, fps: float, lo: float = 5.0, hi: float = 12.0) 
     return float(spec[(freqs >= lo) & (freqs <= hi)].sum() / denom)
 
 
-def compute_motion(video_path: Path, size: tuple[int, int] = (320, 180)) -> float:
-    """画面运动量：相邻帧灰度绝对差均值（越小越静）。"""
-    if not video_path.exists():
-        return float("nan")
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        return float("nan")
-    prev = None
-    diffs: list[float] = []
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        gray = cv2.cvtColor(cv2.resize(frame, size), cv2.COLOR_BGR2GRAY).astype(np.float32)
-        if prev is not None:
-            diffs.append(float(np.mean(np.abs(gray - prev))))
-        prev = gray
-    cap.release()
-    return float(np.mean(diffs)) if diffs else float("nan")
+def group_of(name: str) -> str:
+    if name.startswith("ai"):
+        return "ai"
+    if "fake" in name:
+        return "fake"
+    return "real"
+
+
+def permutation_test(a: list[float], b: list[float], n_perm: int = 20000,
+                     seed: int = 0) -> tuple[float, float]:
+    """单侧置换检验：H1 = mean(a) > mean(b)。返回 (差值, p)。"""
+    a_arr = np.asarray(a, dtype=float)
+    b_arr = np.asarray(b, dtype=float)
+    observed = float(np.mean(a_arr) - np.mean(b_arr))
+    pool = np.concatenate([a_arr, b_arr])
+    n_a = len(a_arr)
+    rng = np.random.default_rng(seed)
+    count = 0
+    for _ in range(n_perm):
+        perm = rng.permutation(pool)
+        if np.mean(perm[:n_a]) - np.mean(perm[n_a:]) >= observed:
+            count += 1
+    return observed, (count + 1) / (n_perm + 1)
+
+
+def min_permutation_p(n_a: int, n_b: int) -> float:
+    """给定样本量时，单侧置换检验能取得的最小 p 值。"""
+    return 1.0 / math.comb(n_a + n_b, n_a)
+
+
+def group_statistics(rows: list[dict]) -> None:
+    groups: dict[str, list[dict]] = {"real": [], "fake": [], "ai": []}
+    for row in rows:
+        groups[group_of(row["name"])].append(row)
+
+    print("=== group stats ===")
+    for group, items in groups.items():
+        if not items:
+            continue
+        jerks = [it["norm_jerk_e"] for it in items]
+        hfs = [it["hf_e"] for it in items]
+        print(f"  {group:4s} n={len(items)} "
+              f"(gates_ok {sum(1 for it in items if it['gates_ok'])}, "
+              f"trusted {sum(1 for it in items if it['valid'])}): "
+              f"norm_jerk_e median={np.median(jerks):.3f} "
+              f"values={[round(v, 3) for v in jerks]}")
+        print(f"       hf_e median={np.median(hfs):.3f} values={[round(v, 3) for v in hfs]}")
+
+    for metric, label in [("norm_jerk_e", "normalized eye jerk"),
+                          ("hf_e", "eye HF energy (5-12 Hz)")]:
+        real = [it[metric] for it in groups["real"]]
+        ai = [it[metric] for it in groups["ai"]]
+        if len(real) < 2 or len(ai) < 2:
+            print(f"  {label}: not enough samples (real={len(real)}, ai={len(ai)})")
+            continue
+        observed, p_value = permutation_test(real, ai)
+        floor = min_permutation_p(len(real), len(ai))
+        print(
+            f"  {label}: real-ai mean diff={observed:+.3f}, one-sided permutation "
+            f"p={p_value:.4f} (minimum possible with n={len(real)}v{len(ai)}: {floor:.3f})"
+        )
+        print("    -> significant at 0.05" if p_value < 0.05
+              else "    -> NOT significant (small n / overlap)")
+
+        real_ok = [it[metric] for it in groups["real"] if it["gates_ok"]]
+        ai_ok = [it[metric] for it in groups["ai"] if it["gates_ok"]]
+        if len(real_ok) >= 2 and len(ai_ok) >= 2:
+            if len(real_ok) != len(real) or len(ai_ok) != len(ai):
+                obs_t, p_t = permutation_test(real_ok, ai_ok)
+                print(f"    gates_ok-only: real n={len(real_ok)}, ai n={len(ai_ok)}, "
+                      f"diff={obs_t:+.3f}, p={p_t:.4f}")
+        else:
+            print(f"    gates_ok-only: insufficient (real={len(real_ok)}, "
+                  f"ai={len(ai_ok)})")
+
 
 
 def pick_peaks(values: np.ndarray, min_distance: int, percentile: float = 75.0) -> list[int]:
@@ -286,7 +344,7 @@ def analyze_file(csv_path: Path, out_path: Path, fps: float, video_path: Path | 
                  max_lag: int, smooth_sec: float, n_boot: int) -> dict:
     df = pd.read_csv(csv_path)
     required = ["frame", LIFT_COL, MOUTH_COL, EYE_COL, MOUTH_RAW, EYE_RAW,
-                "eye_aspect_ratio_geo"]
+                "eye_aspect_ratio_geo", "face_cx", "face_cy", "face_w"]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise KeyError(f"缺少列 {missing}；请用 --blendshapes 重新提取")
@@ -307,17 +365,31 @@ def analyze_file(csv_path: Path, out_path: Path, fps: float, video_path: Path | 
 
     overall = analyze(mouth, eye, max_lag)
 
-    # ---- 三道门控 ----
-    motion = compute_motion(video_path) if video_path else float("nan")
-    agreement = float(np.corrcoef(data["eye_aspect_ratio_geo"], data[EYE_COL])[0, 1])
+    # ---- 数据质量门控 ----
+    cx = data["face_cx"].to_numpy()
+    cy = data["face_cy"].to_numpy()
+    fw = data["face_w"].to_numpy()
+    head_speed = float(np.mean(np.hypot(np.diff(cx), np.diff(cy)) / fw[:-1]) * fps)
+    head_dev = float(np.max(np.hypot(cx - np.median(cx), cy - np.median(cy)) / fw))
+
     mouth_std = float(np.std(data[MOUTH_COL]))
+    geo_std = float(np.std(data["eye_aspect_ratio_geo"]))
+    bs_std = float(np.std(data[EYE_COL]))
+
     gate_reasons = []
-    if not np.isfinite(motion) or motion >= MOTION_MAX:
-        gate_reasons.append(f"motion={motion:.2f}>={MOTION_MAX}")
-    if not np.isfinite(agreement) or agreement >= EYE_AGREEMENT_MAX:
-        gate_reasons.append(f"eye_agreement={agreement:.2f}>={EYE_AGREEMENT_MAX}")
-    if mouth_std <= MOUTH_STD_MIN:
-        gate_reasons.append(f"mouth_std={mouth_std:.3f}<={MOUTH_STD_MIN}")
+    if head_speed >= HEAD_SPEED_MAX:
+        gate_reasons.append(f"head_speed={head_speed:.2f}>={HEAD_SPEED_MAX}")
+    if head_dev >= HEAD_DEV_MAX:
+        gate_reasons.append(f"head_dev={head_dev:.2f}>={HEAD_DEV_MAX}")
+
+    if geo_std < EYE_STD_MIN or bs_std < EYE_STD_MIN:
+        agreement = float("nan")
+        agreement_status = "N/A (low variance)"
+    else:
+        agreement = float(np.corrcoef(data["eye_aspect_ratio_geo"], data[EYE_COL])[0, 1])
+        agreement_status = "ok"
+        if agreement >= EYE_AGREEMENT_MAX:
+            gate_reasons.append(f"eye_agreement={agreement:.2f}>={EYE_AGREEMENT_MAX}")
 
     # ---- 事件 ----
     half = int(round(EVENT_HALF_WINDOW_SEC * fps))
@@ -356,14 +428,17 @@ def analyze_file(csv_path: Path, out_path: Path, fps: float, video_path: Path | 
     hf_e = hf_ratio(eye_raw, fps)
 
     name = csv_path.stem[: -len("_features")] if csv_path.stem.endswith("_features") else csv_path.stem
-    trusted = overall["valid"] and not gate_reasons
+    gates_ok = not gate_reasons
+    trusted = overall["valid"] and gates_ok
     return {
         "name": name, "csv": csv_path, "out": out_path,
         "frames": frames, "lift": lift, "mouth": mouth, "eye": eye,
         "overall": overall, "events": events,
         "coverage": len(data) / max(len(df), 1),
-        "motion": motion, "agreement": agreement, "mouth_std": mouth_std,
-        "gate_reasons": gate_reasons, "trusted": trusted,
+        "head_speed": head_speed, "head_dev": head_dev,
+        "agreement": agreement, "agreement_status": agreement_status,
+        "mouth_std": mouth_std,
+        "gate_reasons": gate_reasons, "trusted": trusted, "gates_ok": gates_ok,
         "speed_m": speed_m_all, "jerk_m": jerk_m_all,
         "speed_e": speed_e_all, "jerk_e": jerk_e_all,
         "norm_jerk_m": norm_jerk_m, "norm_jerk_e": norm_jerk_e,
@@ -378,9 +453,12 @@ def print_summary(summary: dict, fps: float, source: str | None) -> dict:
     print(f"=== {summary['name']} ===")
     print(f"  fps: {fps:g}" + (f" (from {source})" if source else " (fallback)"))
     print(f"  frames: {len(summary['frames'])}, face coverage: {summary['coverage']:.1%}")
+    agree_txt = ("N/A" if not np.isfinite(summary["agreement"])
+                 else f"{summary['agreement']:+.2f}")
     print(
-        f"  gates: motion={summary['motion']:.2f}, "
-        f"eye_agreement={summary['agreement']:.2f}, "
+        f"  gates: head_speed={summary['head_speed']:.2f}/s, "
+        f"head_dev={summary['head_dev']:.2f}, "
+        f"eye_agreement={agree_txt} ({summary['agreement_status']}), "
         f"mouth_std={summary['mouth_std']:.3f} -> "
         f"{'OK' if not summary['gate_reasons'] else 'INVALID: ' + ', '.join(summary['gate_reasons'])}"
     )
@@ -429,6 +507,7 @@ def print_summary(summary: dict, fps: float, source: str | None) -> dict:
         "name": summary["name"], "fps": fps,
         "lag": overall["lag"], "r": overall["r"],
         "valid": summary["trusted"],
+        "gates_ok": summary["gates_ok"],
         "events": len(events), "valid_events": len(valid_events),
         "consistency": consistency,
         "jerk_m": summary["jerk_m"], "jerk_e": summary["jerk_e"],
@@ -520,6 +599,7 @@ def main(argv: list[str] | None = None) -> int:
     jitter_path = args.out_dir / "jerk_comparison.png"
     plot_jitter(rows, jitter_path)
     print(f"jitter figure: {jitter_path}")
+    group_statistics(rows)
     print("done")
     return 0
 
