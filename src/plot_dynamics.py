@@ -43,7 +43,8 @@ BASELINE_SEC = 1.0
 ONSET_MAINTENANCE_GAP_SEC = 0.4
 
 HEAD_SPEED_MAX = 0.5        # 脸宽/秒；超过视为大幅甩头
-HEAD_DEV_MAX = 0.6          # 相对中位位置的最大偏移（脸宽）
+HEAD_DEV_MAX = 1.5          # 相对中位位置的最大偏移；慢漂移可接受，只拦镜头级位移
+COVERAGE_MIN = 0.95         # 人脸覆盖率低于此值直接无效
 EYE_STD_MIN = 0.008         # 眼通道标准差低于此值时不计算一致性，标记 N/A
 EYE_AGREEMENT_MAX = 0.0     # 几何 EAR 与 Blendshape squint 必须负相关
 
@@ -147,19 +148,30 @@ def self_check() -> None:
         raise RuntimeError("滞后符号自检失败")
 
 
-def jitter_stats(signal: np.ndarray, fps: float) -> tuple[float, float, float]:
-    """返回 (速度, Jerk, 归一化 Jerk)。
+def jitter_stats(signal: np.ndarray, fps: float,
+                 mask: np.ndarray | None = None) -> tuple[float, float, float]:
+    """返回 (速度, Jerk, 归一化 Jerk)，可屏蔽眨眼等瞬态。
 
     速度 = |一阶差分|均值 × fps
     Jerk = |二阶差分|均值 × fps²
-    归一化 Jerk = Jerk / (std × fps²)，去掉动作幅度的影响，才可比“平滑度”。
+    归一化 Jerk = Jerk / (std × fps²)，去掉动作幅度的影响。
+    屏蔽规则：差分窗口内任意端点被 mask 标记则丢弃该差分。
     """
+    signal = np.asarray(signal, dtype=float)
+    if mask is None:
+        mask = np.zeros(signal.shape, dtype=bool)
+    else:
+        mask = np.asarray(mask, dtype=bool)
+
     d1 = np.diff(signal)
     d2 = np.diff(signal, n=2)
-    speed = float(np.mean(np.abs(d1))) * fps if len(d1) else float("nan")
-    jerk = float(np.mean(np.abs(d2))) * fps * fps if len(d2) else float("nan")
-    std = float(np.std(signal))
-    norm_jerk = jerk / (std * fps * fps) if std > 0 else float("nan")
+    bad1 = mask[1:] | mask[:-1]
+    bad2 = mask[2:] | mask[1:-1] | mask[:-2]
+
+    speed = float(np.mean(np.abs(d1[~bad1]))) * fps if (~bad1).any() else float("nan")
+    jerk = float(np.mean(np.abs(d2[~bad2]))) * fps * fps if (~bad2).any() else float("nan")
+    std = float(np.std(signal[~mask])) if (~mask).any() else float("nan")
+    norm_jerk = jerk / (std * fps * fps) if np.isfinite(std) and std > 0 else float("nan")
     return speed, jerk, norm_jerk
 
 
@@ -344,7 +356,8 @@ def analyze_file(csv_path: Path, out_path: Path, fps: float, video_path: Path | 
                  max_lag: int, smooth_sec: float, n_boot: int) -> dict:
     df = pd.read_csv(csv_path)
     required = ["frame", LIFT_COL, MOUTH_COL, EYE_COL, MOUTH_RAW, EYE_RAW,
-                "eye_aspect_ratio_geo", "face_cx", "face_cy", "face_w"]
+                "eye_aspect_ratio_geo", "face_cx", "face_cy", "face_w",
+                "eyeBlinkLeft_smooth", "eyeBlinkRight_smooth"]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise KeyError(f"缺少列 {missing}；请用 --blendshapes 重新提取")
@@ -363,6 +376,17 @@ def analyze_file(csv_path: Path, out_path: Path, fps: float, video_path: Path | 
     mouth_raw = data[MOUTH_RAW].to_numpy()
     eye_raw = data[EYE_RAW].to_numpy()
 
+    # 眨眼瞬态会主导 eyeSquint 的高频能量，计算微颤时屏蔽（并膨胀 2 帧）
+    blink = (
+        (data["eyeBlinkLeft_smooth"].to_numpy() > 0.5)
+        | (data["eyeBlinkRight_smooth"].to_numpy() > 0.5)
+    )
+    blink_mask = blink.copy()
+    for shift in (1, 2):
+        blink_mask[shift:] |= blink[:-shift]
+        blink_mask[:-shift] |= blink[shift:]
+    blink_pct = float(np.mean(blink))
+
     overall = analyze(mouth, eye, max_lag)
 
     # ---- 数据质量门控 ----
@@ -377,6 +401,9 @@ def analyze_file(csv_path: Path, out_path: Path, fps: float, video_path: Path | 
     bs_std = float(np.std(data[EYE_COL]))
 
     gate_reasons = []
+    coverage = len(data) / max(len(df), 1)
+    if coverage < COVERAGE_MIN:
+        gate_reasons.append(f"coverage={coverage:.1%}<{COVERAGE_MIN:.0%}")
     if head_speed >= HEAD_SPEED_MAX:
         gate_reasons.append(f"head_speed={head_speed:.2f}>={HEAD_SPEED_MAX}")
     if head_dev >= HEAD_DEV_MAX:
@@ -412,7 +439,7 @@ def analyze_file(csv_path: Path, out_path: Path, fps: float, video_path: Path | 
         res = analyze(seg_m, seg_e, max_lag)
         ci_lo, ci_hi = bootstrap_r_ci(seg_m, seg_e, res["lag"], n_boot, seed=p)
         speed_m, jerk_m, _ = jitter_stats(mouth_raw[lo:hi], fps)
-        speed_e, jerk_e, _ = jitter_stats(eye_raw[lo:hi], fps)
+        speed_e, jerk_e, _ = jitter_stats(eye_raw[lo:hi], fps, blink_mask[lo:hi])
 
         events.append({
             "peak": int(frames[p]), "lo": int(frames[lo]), "hi": int(frames[hi - 1]),
@@ -423,7 +450,7 @@ def analyze_file(csv_path: Path, out_path: Path, fps: float, video_path: Path | 
         })
 
     speed_m_all, jerk_m_all, norm_jerk_m = jitter_stats(mouth_raw, fps)
-    speed_e_all, jerk_e_all, norm_jerk_e = jitter_stats(eye_raw, fps)
+    speed_e_all, jerk_e_all, norm_jerk_e = jitter_stats(eye_raw, fps, blink_mask)
     hf_m = hf_ratio(mouth_raw, fps)
     hf_e = hf_ratio(eye_raw, fps)
 
@@ -434,7 +461,7 @@ def analyze_file(csv_path: Path, out_path: Path, fps: float, video_path: Path | 
         "name": name, "csv": csv_path, "out": out_path,
         "frames": frames, "lift": lift, "mouth": mouth, "eye": eye,
         "overall": overall, "events": events,
-        "coverage": len(data) / max(len(df), 1),
+        "coverage": coverage,
         "head_speed": head_speed, "head_dev": head_dev,
         "agreement": agreement, "agreement_status": agreement_status,
         "mouth_std": mouth_std,
@@ -442,7 +469,7 @@ def analyze_file(csv_path: Path, out_path: Path, fps: float, video_path: Path | 
         "speed_m": speed_m_all, "jerk_m": jerk_m_all,
         "speed_e": speed_e_all, "jerk_e": jerk_e_all,
         "norm_jerk_m": norm_jerk_m, "norm_jerk_e": norm_jerk_e,
-        "hf_m": hf_m, "hf_e": hf_e,
+        "hf_m": hf_m, "hf_e": hf_e, "blink_pct": blink_pct,
     }
 
 
@@ -456,7 +483,8 @@ def print_summary(summary: dict, fps: float, source: str | None) -> dict:
     agree_txt = ("N/A" if not np.isfinite(summary["agreement"])
                  else f"{summary['agreement']:+.2f}")
     print(
-        f"  gates: head_speed={summary['head_speed']:.2f}/s, "
+        f"  gates: coverage={summary['coverage']:.1%}, "
+        f"head_speed={summary['head_speed']:.2f}/s, "
         f"head_dev={summary['head_dev']:.2f}, "
         f"eye_agreement={agree_txt} ({summary['agreement_status']}), "
         f"mouth_std={summary['mouth_std']:.3f} -> "
@@ -469,7 +497,8 @@ def print_summary(summary: dict, fps: float, source: str | None) -> dict:
         f"norm={summary['norm_jerk_e']:.3f}"
     )
     print(
-        f"  hf energy (5-12 Hz): mouth={summary['hf_m']:.3f}, eye={summary['hf_e']:.3f}"
+        f"  hf energy (5-12 Hz): mouth={summary['hf_m']:.3f}, eye={summary['hf_e']:.3f} "
+        f"| blink={summary['blink_pct']:.1%} (excluded from eye jitter)"
     )
     print(
         f"  overall: lag={overall['lag']:+d} f ({overall['lag'] / fps * 1000:+.0f} ms), "
@@ -550,6 +579,49 @@ def plot_jitter(rows: list[dict], out_path: Path) -> None:
     plt.close(fig)
 
 
+def plot_group_comparison(rows: list[dict], out_path: Path) -> None:
+    groups: dict[str, list[dict]] = {"real": [], "ai": [], "fake": []}
+    for row in rows:
+        groups[group_of(row["name"])].append(row)
+
+    fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.8))
+    colors = {"real": "#2e7d32", "ai": "#c62828", "fake": "#f9a825"}
+
+    for ax, metric, title in [
+        (axes[0], "norm_jerk_e", "normalized eye jerk"),
+        (axes[1], "hf_e", "eye HF energy (5-12 Hz)"),
+    ]:
+        data, ticklabels, used = [], [], []
+        for group in ("real", "ai", "fake"):
+            values = [r[metric] for r in groups[group]]
+            if not values:
+                continue
+            data.append(values)
+            ticklabels.append(f"{group}\nn={len(values)}")
+            used.append(group)
+        if not data:
+            continue
+        box = ax.boxplot(data, widths=0.5, patch_artist=True, showfliers=False)
+        ax.set_xticks(range(1, len(ticklabels) + 1))
+        ax.set_xticklabels(ticklabels)
+        for patch, group in zip(box["boxes"], used):
+            patch.set_facecolor(colors[group])
+            patch.set_alpha(0.25)
+        rng = np.random.default_rng(1)
+        for i, (values, group) in enumerate(zip(data, used), start=1):
+            jitter = rng.uniform(-0.12, 0.12, len(values))
+            ax.scatter(np.full(len(values), i) + jitter, values,
+                       s=48, color=colors[group], edgecolor="black", linewidth=0.4, zorder=3)
+        ax.set_title(title)
+        ax.grid(axis="y", alpha=0.3)
+
+    fig.suptitle("FaceTempo W4.3: micro-jitter, real vs AI")
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
@@ -600,6 +672,9 @@ def main(argv: list[str] | None = None) -> int:
     plot_jitter(rows, jitter_path)
     print(f"jitter figure: {jitter_path}")
     group_statistics(rows)
+    comparison_path = args.out_dir / "final_comparison.png"
+    plot_group_comparison(rows, comparison_path)
+    print(f"comparison figure: {comparison_path}")
     print("done")
     return 0
 
