@@ -36,10 +36,40 @@ from plot_dynamics import TARGET_FPS, hf_ratio, jitter_stats, resample_signal  #
 MODEL_PATH = PROJECT_ROOT / "models" / "face_landmarker.task"
 JERK_THRESHOLD = 60.0
 
+# 图表统一使用英文标签，避免浏览器翻译/中文字体导致的乱码
+plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
+plt.rcParams["axes.unicode_minus"] = False
+
 _LOCK = threading.Lock()
 _LANDMARKER = None
 _KEEPALIVE: list = []
 _TIMESTAMP_MS = 0
+
+CSS = """
+.gradio-container { max-width: 1180px !important; margin: 0 auto !important; }
+#hero { text-align: center; padding: 10px 0 0 0; }
+#hero h1 { font-size: 2.1rem; letter-spacing: .02em; margin: 0; color: #0b2a4a; }
+#hero p { color: #475569; margin: 6px 0 0 0; font-size: .98rem; }
+#scanline {
+  height: 3px; width: 100%; border-radius: 2px; margin: 14px 0 20px 0;
+  background: linear-gradient(90deg, #0b2a4a, #38bdf8, #0b2a4a);
+  background-size: 200% 100%;
+  animation: scan 3s linear infinite;
+}
+@keyframes scan { 0% { background-position: 0% 0; } 100% { background-position: 200% 0; } }
+#baseline {
+  background: #f1f5f9; border-left: 4px solid #0b2a4a;
+  padding: 12px 16px; border-radius: 8px; font-size: .9rem; line-height: 1.6;
+}
+#result-card { min-height: 260px; }
+button.primary {
+  background: #0b2a4a !important; color: #ffffff !important;
+  border-radius: 10px !important; font-weight: 600 !important;
+  letter-spacing: .02em;
+}
+button.primary:hover { background: #123c66 !important; }
+footer { display: none !important; }
+"""
 
 
 def get_landmarker():
@@ -57,7 +87,7 @@ def get_landmarker():
     return _LANDMARKER
 
 
-def _extract_series(video_path: Path) -> pd.DataFrame:
+def _extract_series(video_path: Path, progress=None) -> pd.DataFrame:
     """逐帧提取演示所需的最小特征集。"""
     global _TIMESTAMP_MS
 
@@ -68,6 +98,7 @@ def _extract_series(video_path: Path) -> pd.DataFrame:
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
     step = max(1, int(round(1000.0 / fps)))
     landmarker = get_landmarker()
 
@@ -107,9 +138,14 @@ def _extract_series(video_path: Path) -> pd.DataFrame:
         rows.append(row)
         frame_id += 1
 
+        if progress is not None and total > 0 and frame_id % 10 == 0:
+            progress(min(0.88, frame_id / total), desc=f"追踪面部关键点 {frame_id}/{total}")
+
     cap.release()
     if not rows:
         raise RuntimeError("视频中没有可读取的帧。")
+    if progress is not None:
+        progress(0.92, desc="计算微颤指标…")
     return pd.DataFrame(rows)
 
 
@@ -118,17 +154,17 @@ def _plot_result(mar: np.ndarray, jerk: float, out_path: Path) -> None:
         1, 2, figsize=(11, 3.8), gridspec_kw={"width_ratios": [2.2, 1]}
     )
     ax1.plot(mar, color="#d62728", lw=1.3)
-    ax1.set_title("MAR（嘴部开合）")
+    ax1.set_title("MAR curve (mouth opening)")
     ax1.set_xlabel("frame")
     ax1.set_ylabel("MAR")
     ax1.grid(alpha=0.3)
 
     color = "#2e7d32" if jerk >= JERK_THRESHOLD else "#c62828"
-    ax2.barh(["eye jerk"], [jerk], color=color, alpha=0.5, height=0.5)
-    ax2.axvline(JERK_THRESHOLD, color="black", ls="--", lw=1)
-    ax2.text(JERK_THRESHOLD, 0.32, f"  threshold {JERK_THRESHOLD:g}", fontsize=8)
+    ax2.barh(["eye jerk"], [jerk], color=color, alpha=0.55, height=0.5)
+    ax2.axvline(JERK_THRESHOLD, color="#0b2a4a", ls="--", lw=1)
     ax2.set_xlim(0, max(100.0, jerk * 1.2))
-    ax2.set_title("归一化眼周 Jerk")
+    ax2.set_title(f"Normalized eye jerk (threshold {JERK_THRESHOLD:g})")
+    ax2.set_xlabel("jerk / std (1/s^2)")
     ax2.grid(axis="x", alpha=0.3)
 
     fig.tight_layout()
@@ -137,15 +173,17 @@ def _plot_result(mar: np.ndarray, jerk: float, out_path: Path) -> None:
     plt.close(fig)
 
 
-def analyze(video_path: str):
-    """Gradio 回调：返回 (Markdown 结论, 图片路径)。"""
+def analyze(video_path, progress=None):
+    """核心回调：返回 (Markdown 结论, 图片路径)。"""
+    if isinstance(video_path, dict):
+        video_path = video_path.get("path") or video_path.get("name")
     if not video_path:
         return "请先上传一段正脸视频。", None
 
     path = Path(video_path)
     with _LOCK:
         try:
-            df = _extract_series(path)
+            df = _extract_series(path, progress)
         except Exception as exc:  # 给界面返回可读错误
             return f"处理失败：{exc}", None
 
@@ -161,14 +199,11 @@ def analyze(video_path: str):
             mask[shift:] |= blink[:-shift]
             mask[:-shift] |= blink[shift:]
 
-        # 缺失帧用插值补齐，保证重采样连续
         eye_filled = pd.Series(eye).interpolate(limit_direction="both").to_numpy()
-        fps = 25.0
         cap = cv2.VideoCapture(str(path))
         real_fps = cap.get(cv2.CAP_PROP_FPS)
         cap.release()
-        if real_fps and real_fps > 1:
-            fps = float(real_fps)
+        fps = float(real_fps) if real_fps and real_fps > 1 else 25.0
 
         eye_rs, mask_rs = resample_signal(eye_filled, fps, mask)
         _, _, norm_jerk = jitter_stats(eye_rs, TARGET_FPS, mask_rs)
@@ -179,6 +214,7 @@ def analyze(video_path: str):
 
         suspicious = norm_jerk < JERK_THRESHOLD
         verdict = "疑似 AI 生成 / 过度平滑" if suspicious else "符合真人微颤范围"
+        badge = "低微颤" if suspicious else "真人区间"
         warn = ""
         if coverage < 0.9:
             warn = f"\n\n> ⚠️ 人脸覆盖率仅 {coverage:.1%}，结果可能不可靠。"
@@ -192,42 +228,81 @@ def analyze(video_path: str):
 | 人脸覆盖率 | {coverage:.1%} |
 | 参考阈值 | {JERK_THRESHOLD:g} |
 
-**判断：{verdict}**
+**判断：{verdict}**（{badge}）
 
-说明：该结果是基于本批 4v4 样本的参考阈值（真人最低 67.03，AI 最高 55.03），
+说明：阈值来自主队列 4v4（真人最低 67.03，AI 最高 55.03，取中点 60），
 仅用于演示，不构成确定性鉴定。低画质、静止不动或严重压缩也会降低该数值。{warn}"""
 
         out_path = Path(os.environ.get("TEMP", "/tmp")) / "facetempo_result.png"
         _plot_result(df["mar"].fillna(0).to_numpy(), norm_jerk, out_path)
+        if progress is not None:
+            progress(1.0, desc="完成")
         return result, str(out_path)
 
 
 def build_demo():
     import gradio as gr
 
-    with gr.Blocks(title="FaceTempo · 微颤诊断") as demo:
-        gr.Markdown(
-            "# FaceTempo\n"
-            "**眼周微颤诊断演示**：上传一段正脸视频，系统计算归一化眼周 Jerk，"
-            "并与真人/AI 参考区间比较。"
-        )
-        with gr.Row():
-            with gr.Column(scale=1):
-                video = gr.Video(label="上传正脸视频（MP4, 3–15 秒）", sources=["upload"])
-                button = gr.Button("开始诊断", variant="primary")
-                gr.Markdown(
-                    "> 参考：真人自然笑中位数 77.29；AI 中位数 35.63；阈值 60。\n"
-                    "> 本工具仅用于研究演示，不作为鉴定结论。"
-                )
-            with gr.Column(scale=1):
-                result = gr.Markdown("等待上传视频……")
-                plot = gr.Image(label="MAR 曲线与 Jerk 评分", type="filepath")
+    theme = gr.themes.Soft(
+        primary_hue="blue",
+        secondary_hue="slate",
+        neutral_hue="slate",
+    )
 
-        button.click(fn=analyze, inputs=video, outputs=[result, plot])
+    with gr.Blocks(title="FaceTempo · 微颤诊断") as demo:
+        gr.HTML(
+            """
+            <div id="hero">
+              <h1>FaceTempo</h1>
+              <p>面部位移与表情节奏的量化诊断 · 眼周微颤视角下的真人与 AI 人脸</p>
+            </div>
+            <div id="scanline"></div>
+            """
+        )
+
+        with gr.Row():
+            with gr.Column(scale=5):
+                video = gr.Video(
+                    label="上传正脸视频（MP4，3–15 秒）",
+                    sources=["upload"],
+                    height=320,
+                )
+                button = gr.Button("🚀 开始扫描诊断", variant="primary", size="lg")
+                gr.HTML(
+                    """
+                    <div id="baseline">
+                      <b>参考基准（主队列 4v4）</b><br>
+                      真人自然笑：67.03 – 105.70 ｜ AI 生成：21.63 – 55.03<br>
+                      阈值 <b>60</b> = 两组区间中点；仅作演示提示。
+                    </div>
+                    """
+                )
+            with gr.Column(scale=5):
+                result = gr.Markdown(
+                    "### 等待输入\n上传一段正脸视频后点击 **开始扫描诊断**。",
+                    elem_id="result-card",
+                )
+
+        gr.Markdown("### 信号曲线")
+        plot = gr.Image(
+            label="MAR 曲线与归一化眼周 Jerk",
+            type="filepath",
+            height=360,
+        )
+
         gr.Markdown(
             "**方法**：MediaPipe FaceLandmarker（478 点 + 52 Blendshape）→ "
             "眨眼屏蔽 → 统一 25 fps 重采样 → 归一化 Jerk = mean|d²x|·fps² / std(x)。"
         )
+
+        def run_analysis(video_file, progress=gr.Progress()):
+            return analyze(video_file, progress)
+
+        button.click(fn=run_analysis, inputs=video, outputs=[result, plot])
+
+    # Gradio 6 起 theme/css 通过 launch() 传入
+    demo._facetempo_theme = theme
+    demo._facetempo_css = CSS
     return demo
 
 
@@ -235,7 +310,13 @@ if __name__ == "__main__":
     demo = build_demo()
     demo.queue(default_concurrency_limit=1)
     try:
-        demo.launch(server_name="127.0.0.1", server_port=7860, show_error=True)
+        demo.launch(
+            server_name="127.0.0.1",
+            server_port=7860,
+            show_error=True,
+            theme=demo._facetempo_theme,
+            css=demo._facetempo_css,
+        )
     except KeyboardInterrupt:
         sys.stdout.flush()
         os._exit(0)
