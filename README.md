@@ -78,6 +78,15 @@ venv\Scripts\python.exe src\plot_dynamics.py
 `outputs/curves/<stem>_dynamics.png`，终端打印每条视频的滞后、r 值，以及起势/维持是否一致。
 单文件模式：`--csv outputs/features/adult_frontal_features.csv`。
 
+### W5：演示界面
+
+```powershell
+venv\Scripts\python.exe src\app\app.py
+```
+
+启动后打开 <http://127.0.0.1:7860>，上传正脸视频即可看到归一化眼周 Jerk、
+参考阈值判断与 MAR 曲线。界面使用进程级 `FaceLandmarker` 单例，避免 KI-003 的 42 秒关闭阻塞。
+
 CSV 列为 `frame, face_found, ear_l, ear_r, mar, brow, smile_lift, mouth_width, eye_aspect_ratio_geo`，**每帧一行**；未检出脸时 `face_found=0`、特征列为 NaN。加 `--blendshapes` 后再追加 52 个原始 Blendshape 与 52 个 `_smooth` 列。
 
 ### 后续阶段（未实现）
@@ -88,7 +97,7 @@ venv\Scripts\python.exe src\align_features.py    # W2-W3：几何 + AU 按帧对
 venv\Scripts\python.exe src\diagnose.py          # W4-W6：批量诊断
 venv\Scripts\python.exe src\db\load.py           # W4-W6：CSV → MySQL
 venv\Scripts\python.exe src\baseline_convlstm.py # W7-W9：轻量基线
-venv\Scripts\python.exe src\app\gradio_app.py    # W10-W12：上传视频出报告
+venv\Scripts\python.exe src\app\app.py           # W5+：上传视频出诊断（Gradio）
 ```
 
 ---
@@ -136,7 +145,7 @@ FACETEMPO/
 │   ├── diagnose.py            # W4-W6
 │   ├── baseline_convlstm.py   # W7-W9
 │   ├── db/                    # schema.sql + load.py
-│   └── app/                   # gradio_app.py
+│   └── app/                   # app.py（Gradio 演示）
 ├── notebooks/
 │   └── 01_feature_explore.ipynb
 ├── docs/
