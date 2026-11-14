@@ -87,6 +87,18 @@ venv\Scripts\python.exe src\app\app.py
 启动后打开 <http://127.0.0.1:7860>，上传正脸视频即可看到归一化眼周 Jerk、
 参考阈值判断与 MAR 曲线。界面使用进程级 `FaceLandmarker` 单例，避免 KI-003 的 42 秒关闭阻塞。
 
+### W6：导出驱动 JSON
+
+```powershell
+venv\Scripts\python.exe src\translator\blendshape_export.py
+venv\Scripts\python.exe src\translator\verify_json.py
+```
+
+默认读取 `data/raw/samples/w4_clean/real_clean_04.mp4`，输出
+`outputs/translator/real_clean_04_driving.json`（52 通道 × 逐帧，3 帧中值平滑）。
+校验脚本会画出 `mouthSmileLeft` 与 `eyeSquintLeft` 曲线到
+`outputs/translator/verify_curve.png`，并检查帧数、通道数、NaN、时间戳单调性。
+
 CSV 列为 `frame, face_found, ear_l, ear_r, mar, brow, smile_lift, mouth_width, eye_aspect_ratio_geo`，**每帧一行**；未检出脸时 `face_found=0`、特征列为 NaN。加 `--blendshapes` 后再追加 52 个原始 Blendshape 与 52 个 `_smooth` 列。
 
 ### 后续阶段（未实现）
@@ -145,6 +157,7 @@ FACETEMPO/
 │   ├── diagnose.py            # W4-W6
 │   ├── baseline_convlstm.py   # W7-W9
 │   ├── db/                    # schema.sql + load.py
+│   ├── translator/            # blendshape_export.py + verify_json.py
 │   └── app/                   # app.py（Gradio 演示）
 ├── notebooks/
 │   └── 01_feature_explore.ipynb
