@@ -8,6 +8,9 @@ const state = {
   offset: 0,
   started: performance.now(),
   lastUI: 0,
+  usingGLB: false,
+  activeRoot: null,
+  morphBindings: [],
 };
 
 const KEY_CHANNELS = [
@@ -25,7 +28,9 @@ init();
 
 async function init() {
   try {
-    const response = await fetch("/data/driving.json", { cache: "no-store" });
+    const params = new URLSearchParams(location.search);
+    const jsonName = params.get("json") || "driving.json";
+    const response = await fetch(`/data/${encodeURIComponent(jsonName)}`, { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     state.data = await response.json();
   } catch (err) {
@@ -45,10 +50,12 @@ async function init() {
     <div>frames<br><b>${meta.total_frames}</b></div>
     <div>fps<br><b>${meta.fps}</b></div>
     <div>channels<br><b>52</b></div>
+    <div style="grid-column: 1 / -1;">renderer<br><b id="model-status">程序化示意头</b></div>
   `;
 
   buildChannelList();
   setupScene();
+  loadOptionalGLB();
   setupControls();
   animate();
 }
@@ -316,11 +323,84 @@ function updateUI(values, frameIndex, t) {
   }
 }
 
+function normalizeName(name) {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function channelCandidates(name) {
+  const candidates = new Set([name]);
+  if (name.endsWith("Left")) candidates.add(name.slice(0, -4) + "L");
+  if (name.endsWith("Right")) candidates.add(name.slice(0, -5) + "R");
+  candidates.add(name.replace(/_/g, ""));
+  return [...candidates].map(normalizeName);
+}
+
+function loadOptionalGLB() {
+  if (typeof THREE.GLTFLoader !== "function") return;
+  const loader = new THREE.GLTFLoader();
+  loader.load(
+    "model.glb",
+    (gltf) => {
+      const model = gltf.scene;
+      const wrapper = new THREE.Group();
+      wrapper.add(model);
+
+      const box = new THREE.Box3().setFromObject(model);
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      model.position.sub(center);
+      const scale = 2.0 / Math.max(size.x, size.y, size.z || 1);
+      wrapper.scale.setScalar(scale);
+
+      const channels = Object.keys(state.data.frames[0].blendshapes);
+      const bindings = [];
+      model.traverse((obj) => {
+        if (!obj.isMesh || !obj.morphTargetDictionary) return;
+        const map = {};
+        for (const [key, value] of Object.entries(obj.morphTargetDictionary)) {
+          map[normalizeName(key)] = value;
+        }
+        for (const channel of channels) {
+          for (const candidate of channelCandidates(channel)) {
+            if (map[candidate] !== undefined) {
+              bindings.push({ mesh: obj, index: map[candidate], channel });
+              break;
+            }
+          }
+        }
+      });
+
+      if (!bindings.length) {
+        console.warn("model.glb 没有匹配的 morph targets，继续使用程序化头");
+        return;
+      }
+
+      head.visible = false;
+      scene.add(wrapper);
+      state.activeRoot = wrapper;
+      state.usingGLB = true;
+      state.morphBindings = bindings;
+      const status = document.getElementById("model-status");
+      if (status) status.textContent = `GLB · ${bindings.length} 通道`;
+    },
+    undefined,
+    () => console.info("未找到 model.glb，使用程序化示意头")
+  );
+}
+
+function applyMorphs(values) {
+  for (const binding of state.morphBindings) {
+    const value = values[binding.channel] ?? 0;
+    binding.mesh.morphTargetInfluences[binding.index] = value;
+  }
+}
+
 function animate() {
   requestAnimationFrame(animate);
   const t = currentTime();
   const { values, frame } = sampleAt(t);
   applyValues(values);
+  if (state.usingGLB) applyMorphs(values);
 
   const now = performance.now();
   if (now - state.lastUI > 80) {
@@ -328,8 +408,10 @@ function animate() {
     state.lastUI = now;
   }
 
-  head.rotation.y = Math.sin(t * 0.35) * 0.06;
-  head.rotation.x = Math.sin(t * 0.27) * 0.02;
+  if (!state.usingGLB) {
+    head.rotation.y = Math.sin(t * 0.35) * 0.06;
+    head.rotation.x = Math.sin(t * 0.27) * 0.02;
+  }
 
   renderer.render(scene, camera);
 }

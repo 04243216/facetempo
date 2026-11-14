@@ -8,6 +8,7 @@ outputs/w4_clean/
 outputs/w4_final/
 outputs/holdout/
 outputs/translator/
+outputs/app_json/
 
 # reports / figures 允许提交（小图、报告），保留目录占位
 !outputs/reports/.gitkeep

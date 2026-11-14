@@ -86,6 +86,7 @@ venv\Scripts\python.exe src\app\app.py
 
 启动后打开 <http://127.0.0.1:7860>，上传正脸视频即可看到归一化眼周 Jerk、
 参考阈值判断与 MAR 曲线。界面使用进程级 `FaceLandmarker` 单例，避免 KI-003 的 42 秒关闭阻塞。
+诊断完成后，页面会自动生成该视频的 52 通道 JSON，并在下方嵌入 3D 复现。
 
 ### W6：导出驱动 JSON
 
@@ -109,6 +110,9 @@ venv\Scripts\python.exe src\translator\serve_preview.py
 页面用 Three.js 加载 `driving.json`，把 52 个通道实时映射到程序化 3D 头部
 （眼睑开合、嘴角/下颌、眉毛、眼周收缩），并显示逐帧时间轴与通道数值。
 截图：`outputs/translator/web_preview_screenshot.png`。
+
+若在 `src/translator/web_preview/model.glb` 放入带 52 个 morph targets 的 ARKit 模型，
+页面会自动优先加载，并按通道名绑定；找不到或没有匹配的 morph target 时回退到程序化头。
 
 CSV 列为 `frame, face_found, ear_l, ear_r, mar, brow, smile_lift, mouth_width, eye_aspect_ratio_geo`，**每帧一行**；未检出脸时 `face_found=0`、特征列为 NaN。加 `--blendshapes` 后再追加 52 个原始 Blendshape 与 52 个 `_smooth` 列。
 

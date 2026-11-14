@@ -12,10 +12,14 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import threading
+import uuid
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import quote
 
 import cv2
 import matplotlib
@@ -32,10 +36,14 @@ sys.path.insert(0, str(SRC_DIR))
 
 import extract_landmarks as core  # noqa: E402
 from plot_dynamics import TARGET_FPS, hf_ratio, jitter_stats, resample_signal  # noqa: E402
+from translator import blendshape_export as exporter  # noqa: E402
+from translator import serve_preview  # noqa: E402
 
 MODEL_PATH = PROJECT_ROOT / "models" / "face_landmarker.task"
+JSON_DIR = PROJECT_ROOT / "outputs" / "app_json"
 JERK_THRESHOLD = 60.0
 
+_CHANNELS: list[str] = []
 # 图表统一使用英文标签，避免浏览器翻译/中文字体导致的乱码
 plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
@@ -44,6 +52,7 @@ _LOCK = threading.Lock()
 _LANDMARKER = None
 _KEEPALIVE: list = []
 _TIMESTAMP_MS = 0
+_PREVIEW_PORT: int | None = None
 
 CSS = """
 .gradio-container { max-width: 1180px !important; margin: 0 auto !important; }
@@ -138,9 +147,15 @@ def _extract_series(video_path: Path, progress=None) -> pd.DataFrame:
             row.update(core.compute_features(lm))
             row.update(core.compute_geometry(lm, width, height))
         if result.face_blendshapes:
-            for item in result.face_blendshapes[0]:
-                if item.category_name in ("eyeSquintRight", "eyeBlinkLeft", "eyeBlinkRight"):
-                    row[item.category_name] = item.score
+            shapes = result.face_blendshapes[0]
+            names = [
+                "neutral" if c.category_name == "_neutral" else c.category_name
+                for c in shapes
+            ]
+            if not _CHANNELS:
+                _CHANNELS[:] = names
+            for name, item in zip(names, shapes):
+                row[name] = item.score
 
         rows.append(row)
         frame_id += 1
@@ -202,19 +217,77 @@ def generate_prompt_fix(jerk_score: float, missing_features: list[str] | None = 
 负面提示：塑料感、橡皮膜、过度平滑、假笑、表情冻结、AI 磨皮。"""
 
 
+def _export_driving_json(df: pd.DataFrame, video: Path, fps: float) -> str:
+    """把本次上传的 52 通道平滑后写成驱动 JSON，返回文件名。"""
+    channel_cols = list(_CHANNELS)
+    missing = [c for c in channel_cols if c not in df.columns]
+    if missing:
+        raise RuntimeError(f"本次提取缺少通道: {missing}")
+    if len(channel_cols) != 52:
+        raise RuntimeError(f"期望 52 个 Blendshape 通道，实际 {len(channel_cols)} 个")
+
+    smoothed = df[channel_cols].rolling(3, center=True, min_periods=1).median()
+    smoothed.columns = [f"{c}_smooth" for c in channel_cols]
+    json_df = pd.concat([df[["frame", "face_found"]], smoothed], axis=1)
+
+    payload = exporter.build_payload(json_df, video, fps)
+    exporter.validate_payload(payload)
+
+    JSON_DIR.mkdir(parents=True, exist_ok=True)
+    name = f"{video.stem}_{uuid.uuid4().hex[:8]}.json"
+    with (JSON_DIR / name).open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=1)
+
+    old_files = sorted(JSON_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime)
+    for old in old_files[:-20]:
+        old.unlink(missing_ok=True)
+    return name
+
+
+def ensure_preview_server() -> int:
+    """在后台线程启动 3D 预览静态服务，返回端口。"""
+    global _PREVIEW_PORT
+    if _PREVIEW_PORT is not None:
+        return _PREVIEW_PORT
+
+    handler = serve_preview.make_handler(JSON_DIR)
+    for port in range(8000, 8011):
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", port), handler)
+        except OSError:
+            continue
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        _PREVIEW_PORT = port
+        return port
+    raise RuntimeError("8000–8010 端口均被占用，无法启动 3D 预览")
+
+
+def viewer_html(json_name: str) -> str:
+    port = ensure_preview_server()
+    url = (
+        f"http://127.0.0.1:{port}{serve_preview.PREVIEW_PATH}"
+        f"?json={quote(json_name, safe='')}"
+    )
+    return (
+        f'<iframe src="{url}" loading="lazy" '
+        'style="width:100%;height:560px;border:1px solid #1e293b;'
+        'border-radius:12px;background:#070d19"></iframe>'
+    )
+
+
 def analyze(video_path, progress=None):
-    """核心回调：返回 (Markdown 结论, 图片路径)。"""
+    """核心回调：返回 (Markdown 结论, 图片路径, 3D 预览 HTML, 提示词)。"""
     if isinstance(video_path, dict):
         video_path = video_path.get("path") or video_path.get("name")
     if not video_path:
-        return "请先上传一段正脸视频。", None, ""
+        return "请先上传一段正脸视频。", None, "", ""
 
     path = Path(video_path)
     with _LOCK:
         try:
             df = _extract_series(path, progress)
         except Exception as exc:  # 给界面返回可读错误
-            return f"处理失败：{exc}", None, ""
+            return f"处理失败：{exc}", None, "", ""
 
         valid = df.dropna(subset=["face_cx", "face_cy", "face_w"])
         coverage = len(valid) / len(df)
@@ -239,7 +312,7 @@ def analyze(video_path, progress=None):
         hf = hf_ratio(eye_rs, TARGET_FPS)
 
         if not np.isfinite(norm_jerk):
-            return "有效眼周信号不足，无法计算微颤指标。", None, ""
+            return "有效眼周信号不足，无法计算微颤指标。", None, "", ""
 
         mar_std = float(np.nanstd(df["mar"].to_numpy(dtype=float)))
         missing_features = []
@@ -276,9 +349,19 @@ def analyze(video_path, progress=None):
 
         out_path = Path(os.environ.get("TEMP", "/tmp")) / "facetempo_result.png"
         _plot_result(df["mar"].fillna(0).to_numpy(), norm_jerk, out_path)
+
+        try:
+            json_name = _export_driving_json(df, path, fps)
+            viewer = viewer_html(json_name)
+        except Exception as exc:  # 3D 预览失败不影响诊断结果
+            viewer = (
+                '<div style="padding:16px;border:1px solid #7f1d1d;border-radius:10px;'
+                'color:#fca5a5">3D 预览生成失败：' + str(exc) + "</div>"
+            )
+
         if progress is not None:
             progress(1.0, desc="完成")
-        return result, str(out_path), prompt
+        return result, str(out_path), viewer, prompt
 
 
 def build_demo():
@@ -328,7 +411,14 @@ def build_demo():
         plot = gr.Image(
             label="MAR 曲线与归一化眼周 Jerk",
             type="filepath",
-            height=360,
+            height=340,
+        )
+
+        gr.Markdown("### 3D 复现")
+        viewer = gr.HTML(
+            "<div style='padding:26px;text-align:center;color:#94a3b8;"
+            "border:1px dashed #1e293b;border-radius:12px'>"
+            "诊断完成后，这里会加载 3D 驱动预览（52 通道驱动）。</div>"
         )
 
         gr.Markdown("### 反向优化提示词")
@@ -347,7 +437,11 @@ def build_demo():
         def run_analysis(video_file, progress=gr.Progress()):
             return analyze(video_file, progress)
 
-        button.click(fn=run_analysis, inputs=video, outputs=[result, plot, prompt_box])
+        button.click(
+            fn=run_analysis,
+            inputs=video,
+            outputs=[result, plot, viewer, prompt_box],
+        )
 
         demo.load(
             fn=None,
