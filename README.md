@@ -99,6 +99,17 @@ venv\Scripts\python.exe src\translator\verify_json.py
 校验脚本会画出 `mouthSmileLeft` 与 `eyeSquintLeft` 曲线到
 `outputs/translator/verify_curve.png`，并检查帧数、通道数、NaN、时间戳单调性。
 
+### W7：3D 驱动预览
+
+```powershell
+venv\Scripts\python.exe src\translator\serve_preview.py
+```
+
+打开 <http://127.0.0.1:8000/src/translator/web_preview/index.html>。
+页面用 Three.js 加载 `driving.json`，把 52 个通道实时映射到程序化 3D 头部
+（眼睑开合、嘴角/下颌、眉毛、眼周收缩），并显示逐帧时间轴与通道数值。
+截图：`outputs/translator/web_preview_screenshot.png`。
+
 CSV 列为 `frame, face_found, ear_l, ear_r, mar, brow, smile_lift, mouth_width, eye_aspect_ratio_geo`，**每帧一行**；未检出脸时 `face_found=0`、特征列为 NaN。加 `--blendshapes` 后再追加 52 个原始 Blendshape 与 52 个 `_smooth` 列。
 
 ### 后续阶段（未实现）
