@@ -11,6 +11,13 @@ outputs/translator/
 outputs/app_json/
 src/translator/web_preview/model.glb
 
+# 生成物中的大文件（保留 reports/figures）
+outputs/**/*.mp4
+outputs/**/*.mov
+outputs/**/*.csv
+outputs/**/*.parquet
+outputs/**/*.npz
+
 # reports / figures 允许提交（小图、报告），保留目录占位
 !outputs/reports/.gitkeep
 !outputs/figures/.gitkeep
@@ -23,6 +30,12 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.gradio/
+flagged/
+*.log
 
 # ---------- 模型权重 / 大文件 ----------
 models/

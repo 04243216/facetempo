@@ -1,6 +1,6 @@
 # FaceTempo 直接依赖（人读清单）
-# 锁文件见 requirements.txt（由 pip freeze 生成，机器读）
-# 实测环境：Windows + Python 3.12.10
+# 云端安装：requirements.txt（精简，兼容 Hugging Face Spaces）
+# 本地完整锁定：requirements-dev.txt（pip freeze 生成）# 实测环境：Windows + Python 3.12.10
 # 注意：mediapipe 1.x 已移除 mp.solutions，src 中使用 Tasks API（tasks.vision.FaceLandmarker）
 # 安装：venv\Scripts\python.exe -m pip install -r requirements.txt
 

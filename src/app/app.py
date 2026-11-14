@@ -17,7 +17,6 @@ import os
 import sys
 import threading
 import uuid
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote
 
@@ -29,6 +28,8 @@ import matplotlib.pyplot as plt
 import mediapipe as mp
 import numpy as np
 import pandas as pd
+from fastapi.staticfiles import StaticFiles
+from starlette.routing import Mount
 
 SRC_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -37,10 +38,10 @@ sys.path.insert(0, str(SRC_DIR))
 import extract_landmarks as core  # noqa: E402
 from plot_dynamics import TARGET_FPS, hf_ratio, jitter_stats, resample_signal  # noqa: E402
 from translator import blendshape_export as exporter  # noqa: E402
-from translator import serve_preview  # noqa: E402
 
 MODEL_PATH = PROJECT_ROOT / "models" / "face_landmarker.task"
 JSON_DIR = PROJECT_ROOT / "outputs" / "app_json"
+WEB_PREVIEW_DIR = SRC_DIR / "translator" / "web_preview"
 JERK_THRESHOLD = 60.0
 
 _CHANNELS: list[str] = []
@@ -52,7 +53,8 @@ _LOCK = threading.Lock()
 _LANDMARKER = None
 _KEEPALIVE: list = []
 _TIMESTAMP_MS = 0
-_PREVIEW_PORT: int | None = None
+_STATIC_MOUNTED: set[int] = set()
+_PREVIEW_PATCHED = False
 
 CSS = """
 .gradio-container { max-width: 1180px !important; margin: 0 auto !important; }
@@ -244,30 +246,44 @@ def _export_driving_json(df: pd.DataFrame, video: Path, fps: float) -> str:
     return name
 
 
-def ensure_preview_server() -> int:
-    """在后台线程启动 3D 预览静态服务，返回端口。"""
-    global _PREVIEW_PORT
-    if _PREVIEW_PORT is not None:
-        return _PREVIEW_PORT
+def _add_static_routes(app) -> None:
+    """把 /preview 与 /data 插到路由最前面（Gradio 有 catch-all）。"""
+    key = id(app)
+    if key in _STATIC_MOUNTED:
+        return
+    JSON_DIR.mkdir(parents=True, exist_ok=True)
+    app.router.routes.insert(
+        0,
+        Mount("/preview", app=StaticFiles(directory=str(WEB_PREVIEW_DIR), html=True),
+              name="preview"),
+    )
+    app.router.routes.insert(
+        0,
+        Mount("/data", app=StaticFiles(directory=str(JSON_DIR)), name="data"),
+    )
+    _STATIC_MOUNTED.add(key)
 
-    handler = serve_preview.make_handler(JSON_DIR)
-    for port in range(8000, 8011):
-        try:
-            server = ThreadingHTTPServer(("127.0.0.1", port), handler)
-        except OSError:
-            continue
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        _PREVIEW_PORT = port
-        return port
-    raise RuntimeError("8000–8010 端口均被占用，无法启动 3D 预览")
+
+def _patch_gradio_app_factory() -> None:
+    """Gradio 在 launch() 时会重建 App；在工厂出口注入静态路由。"""
+    global _PREVIEW_PATCHED
+    if _PREVIEW_PATCHED:
+        return
+    from gradio.routes import App as GradioApp
+
+    original = GradioApp.create_app
+
+    def create_app(blocks, *args, **kwargs):
+        app = original(blocks, *args, **kwargs)
+        _add_static_routes(app)
+        return app
+
+    GradioApp.create_app = staticmethod(create_app)
+    _PREVIEW_PATCHED = True
 
 
 def viewer_html(json_name: str) -> str:
-    port = ensure_preview_server()
-    url = (
-        f"http://127.0.0.1:{port}{serve_preview.PREVIEW_PATH}"
-        f"?json={quote(json_name, safe='')}"
-    )
+    url = f"/preview/index.html?json={quote(json_name, safe='')}"
     return (
         f'<iframe src="{url}" loading="lazy" '
         'style="width:100%;height:560px;border:1px solid #1e293b;'
@@ -367,6 +383,8 @@ def analyze(video_path, progress=None):
 def build_demo():
     import gradio as gr
 
+    _patch_gradio_app_factory()
+
     theme = gr.themes.Soft(
         primary_hue="blue",
         secondary_hue="slate",
@@ -459,10 +477,11 @@ def build_demo():
 if __name__ == "__main__":
     demo = build_demo()
     demo.queue(default_concurrency_limit=1)
+    port = int(os.environ.get("GRADIO_SERVER_PORT", "7860"))
     try:
         demo.launch(
             server_name="127.0.0.1",
-            server_port=7860,
+            server_port=port,
             show_error=True,
             theme=demo._facetempo_theme,
             css=demo._facetempo_css,
