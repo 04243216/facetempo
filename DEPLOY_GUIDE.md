@@ -193,3 +193,41 @@ git push -u origin main
 - [ ] 上传视频后：Jerk 数值、MAR 曲线、提示词、3D 复现都出现
 - [ ] 手机浏览器能打开同一个链接
 - [ ] GitHub README 中的 Space 链接已更新
+
+---
+
+## 10. ModelScope（魔搭）一键包
+
+如果 HF 网络不可用，可直接用桌面上的部署包：
+
+```
+C:\Users\dd279\Desktop\facetempo_deploy\
+C:\Users\dd279\Desktop\facetempo_deploy.zip
+```
+
+包内已包含（这是与普通源码包的关键区别）：
+
+```
+app.py
+requirements.txt
+packages.txt
+models/face_landmarker.task          ← 关键点模型 3.58 MB
+src/translator/web_preview/model.glb  ← 3D 头部 325 KB
+src/                                 ← 全部运行代码
+outputs/app_json / outputs/translator
+```
+
+步骤：
+
+1. 魔搭 → 创空间 → 新建 → 选择 **Gradio** 框架、免费 CPU、公开。
+2. Python 版本选 **3.10 / 3.11 / 3.12**（mediapipe 需要 ≥3.9）。
+3. 把 `facetempo_deploy` 里的**内容**（不是外层文件夹）全选拖入创空间根目录，
+   保持 `src/`、`models/`、`outputs/` 的目录结构。
+4. 启动命令填 `python app.py`，端口 `7860`。
+5. 构建完成后访问：
+   - 首页：`https://<space>.modelscope.cn/`
+   - 3D：`https://<space>.modelscope.cn/preview/index.html`
+
+若魔搭不支持 `packages.txt` 的 apt 安装、且构建时报 `libGL.so.1`，
+需要在自定义镜像中安装 `libgl1 libglib2.0-0 libsm6 libxext6 ffmpeg`，
+或改用支持系统包安装的运行环境。

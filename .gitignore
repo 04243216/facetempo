@@ -18,6 +18,10 @@ outputs/**/*.csv
 outputs/**/*.parquet
 outputs/**/*.npz
 
+# 本地打包目录（模型/源码副本，仅用于上传云端）
+deploy_bundle/
+*.zip
+
 # reports / figures 允许提交（小图、报告），保留目录占位
 !outputs/reports/.gitkeep
 !outputs/figures/.gitkeep
