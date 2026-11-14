@@ -155,7 +155,9 @@ normalized_jerk = jerk / std(x)
 - 逐帧插值播放，支持暂停、拖动时间轴、0.5×/1×/2×；
 - 52 个通道实时显示数值与条形图；
 - 程序化头部由 `eyeBlink`、`mouthSmile`、`jawOpen`、`brow*`、`eyeSquint` 等通道驱动；
-- 若目录下存在 `model.glb`，自动加载并用 `morphTargetDictionary` 绑定通道名（兼容 `mouthSmileLeft` / `mouthSmile_L` 等命名），否则回退到程序化头。
+- 若目录下存在 `model.glb`，自动加载并用 `morphTargetDictionary` 绑定通道名（兼容 `mouthSmileLeft` / `mouthSmile_L` 等命名），否则回退到程序化头；
+- 渲染开启 PCF 软阴影、程序化环境贴图与接触阴影，并带轻微待机呼吸；
+- `auto_fetch_model.py` 可自动下载 three.js 示例的 ARKit 模型（52 个形态键，约 325 KB）；FBX 可用 Blender 后台转换，无 Blender 时提供手动指南。
 
 ### 5.3 All-in-One 控制台
 

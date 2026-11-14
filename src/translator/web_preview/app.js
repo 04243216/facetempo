@@ -1,4 +1,9 @@
-/* FaceTempo W7: drive a procedural 3D head with 52 blendshape channels. */
+/* FaceTempo W7/W8: drive a procedural 3D head with 52 blendshape channels. */
+
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { KTX2Loader } from "three/addons/loaders/KTX2Loader.js";
+import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
 
 const state = {
   data: null,
@@ -66,14 +71,43 @@ function showError(html) {
   el.style.display = "grid";
 }
 
+function buildEnvironment() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 512;
+  canvas.height = 256;
+  const ctx = canvas.getContext("2d");
+  const gradient = ctx.createLinearGradient(0, 0, 0, 256);
+  gradient.addColorStop(0, "#5d6b7d");
+  gradient.addColorStop(0.42, "#1b2029");
+  gradient.addColorStop(1, "#05070a");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, 512, 256);
+
+  const glow = ctx.createRadialGradient(150, 70, 0, 150, 70, 150);
+  glow.addColorStop(0, "rgba(255, 226, 196, 0.45)");
+  glow.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, 512, 256);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.mapping = THREE.EquirectangularReflectionMapping;
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const env = pmrem.fromEquirectangular(texture).texture;
+  pmrem.dispose();
+  texture.dispose();
+  return env;
+}
+
 function setupScene() {
   const canvas = document.getElementById("scene");
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(canvas.clientWidth, canvas.clientHeight, false);
-  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 0.95;
+  renderer.toneMappingExposure = 1.05;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x070d19);
@@ -82,23 +116,34 @@ function setupScene() {
   camera.position.set(0, 0.05, 4.4);
   camera.lookAt(0, -0.05, 0);
 
-  scene.add(new THREE.HemisphereLight(0x9fd8ff, 0x0b1220, 0.42));
+  scene.add(new THREE.HemisphereLight(0xcfd9e8, 0x1a120e, 0.5));
 
-  const key = new THREE.DirectionalLight(0xffffff, 0.72);
+  const key = new THREE.DirectionalLight(0xfff4e6, 1.3);
   key.position.set(2.4, 3.2, 4.2);
+  key.castShadow = true;
+  key.shadow.mapSize.set(1024, 1024);
+  key.shadow.camera.left = -2.5;
+  key.shadow.camera.right = 2.5;
+  key.shadow.camera.top = 2.8;
+  key.shadow.camera.bottom = -2.8;
+  key.shadow.camera.near = 0.5;
+  key.shadow.camera.far = 12;
+  key.shadow.bias = -0.0004;
   scene.add(key);
 
-  const fill = new THREE.DirectionalLight(0x4d7cff, 0.22);
+  const fill = new THREE.DirectionalLight(0x6f8dff, 0.16);
   fill.position.set(-3, 0.5, 2);
   scene.add(fill);
 
-  const rim = new THREE.DirectionalLight(0x38bdf8, 0.55);
+  const rim = new THREE.DirectionalLight(0x5cc8ff, 0.5);
   rim.position.set(0, 1.5, -3.5);
   scene.add(rim);
 
+  scene.environment = buildEnvironment();
+
   const ring = new THREE.Mesh(
     new THREE.TorusGeometry(1.55, 0.012, 16, 120),
-    new THREE.MeshBasicMaterial({ color: 0x1d4ed8, transparent: true, opacity: 0.65 })
+    new THREE.MeshBasicMaterial({ color: 0x1d4ed8, transparent: true, opacity: 0.35 })
   );
   ring.position.z = -1.2;
   scene.add(ring);
@@ -106,6 +151,18 @@ function setupScene() {
   head = new THREE.Group();
   head.position.y = -0.05;
   scene.add(head);
+  state.activeRoot = head;
+  state.basePos = head.position.clone();
+
+  // 深色圆形台面，用来接住阴影
+  const platform = new THREE.Mesh(
+    new THREE.CircleGeometry(1.65, 64),
+    new THREE.MeshStandardMaterial({ color: 0x0a1220, roughness: 0.92, metalness: 0.15 })
+  );
+  platform.rotation.x = -Math.PI / 2;
+  platform.position.y = -1.22;
+  platform.receiveShadow = true;
+  scene.add(platform);
 
   const linear = (hex) => new THREE.Color(hex).convertSRGBToLinear();
   const skin = new THREE.MeshStandardMaterial({
@@ -203,6 +260,15 @@ function setupScene() {
 
   window.addEventListener("resize", resize);
   resize();
+
+  head.traverse((obj) => {
+    if (obj.isMesh) {
+      obj.castShadow = true;
+      obj.receiveShadow = true;
+    }
+  });
+
+  window.__facetempo = { scene, state };
 }
 
 function resize() {
@@ -336,8 +402,17 @@ function channelCandidates(name) {
 }
 
 function loadOptionalGLB() {
-  if (typeof THREE.GLTFLoader !== "function") return;
-  const loader = new THREE.GLTFLoader();
+  const box = document.getElementById("glb-error");
+  if (box) {
+    box.style.display = "block";
+    box.textContent = "正在加载 model.glb…";
+  }
+  const ktx2 = new KTX2Loader()
+    .setTranscoderPath("vendor/jsm/libs/basis/")
+    .detectSupport(renderer);
+  const loader = new GLTFLoader()
+    .setKTX2Loader(ktx2)
+    .setMeshoptDecoder(MeshoptDecoder);
   loader.load(
     "model.glb",
     (gltf) => {
@@ -345,9 +420,9 @@ function loadOptionalGLB() {
       const wrapper = new THREE.Group();
       wrapper.add(model);
 
-      const box = new THREE.Box3().setFromObject(model);
-      const size = box.getSize(new THREE.Vector3());
-      const center = box.getCenter(new THREE.Vector3());
+      const bounds = new THREE.Box3().setFromObject(model);
+      const size = bounds.getSize(new THREE.Vector3());
+      const center = bounds.getCenter(new THREE.Vector3());
       model.position.sub(center);
       const scale = 2.0 / Math.max(size.x, size.y, size.z || 1);
       wrapper.scale.setScalar(scale);
@@ -355,7 +430,21 @@ function loadOptionalGLB() {
       const channels = Object.keys(state.data.frames[0].blendshapes);
       const bindings = [];
       model.traverse((obj) => {
-        if (!obj.isMesh || !obj.morphTargetDictionary) return;
+        if (!obj.isMesh) return;
+        obj.castShadow = true;
+        obj.receiveShadow = true;
+        const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+        for (const material of materials) {
+          if (!material) continue;
+          material.envMapIntensity = 1.1;
+          material.roughness = Math.min(material.roughness ?? 1, 0.68);
+          if (material.map) {
+            material.map.colorSpace = THREE.SRGBColorSpace;
+            material.color = new THREE.Color(0xffe2cc).convertSRGBToLinear();
+          }
+          material.needsUpdate = true;
+        }
+        if (!obj.morphTargetDictionary) return;
         const map = {};
         for (const [key, value] of Object.entries(obj.morphTargetDictionary)) {
           map[normalizeName(key)] = value;
@@ -372,19 +461,33 @@ function loadOptionalGLB() {
 
       if (!bindings.length) {
         console.warn("model.glb 没有匹配的 morph targets，继续使用程序化头");
+        const status = document.getElementById("model-status");
+        if (status) status.textContent = "GLB 无匹配形态键";
         return;
       }
 
       head.visible = false;
       scene.add(wrapper);
       state.activeRoot = wrapper;
+      state.basePos = wrapper.position.clone();
       state.usingGLB = true;
       state.morphBindings = bindings;
       const status = document.getElementById("model-status");
       if (status) status.textContent = `GLB · ${bindings.length} 通道`;
+      if (box) box.style.display = "none";
+      if (box) box.textContent = "";
     },
     undefined,
-    () => console.info("未找到 model.glb，使用程序化示意头")
+    (err) => {
+      console.error("GLB load failed", err);
+      const status = document.getElementById("model-status");
+      if (status) status.textContent = "GLB 加载失败";
+      const box = document.getElementById("glb-error");
+      if (box) {
+        box.style.display = "block";
+        box.textContent = String((err && err.message) || err);
+      }
+    }
   );
 }
 
@@ -408,10 +511,12 @@ function animate() {
     state.lastUI = now;
   }
 
-  if (!state.usingGLB) {
-    head.rotation.y = Math.sin(t * 0.35) * 0.06;
-    head.rotation.x = Math.sin(t * 0.27) * 0.02;
-  }
+  const idle = performance.now() / 1000;
+  const root = state.activeRoot || head;
+  const base = state.basePos || { y: 0 };
+  root.position.y = base.y + Math.sin(idle * 0.9) * 0.008;
+  root.rotation.y = Math.sin(idle * 0.45) * 0.05;
+  root.rotation.x = Math.sin(idle * 0.7) * 0.012;
 
   renderer.render(scene, camera);
 }

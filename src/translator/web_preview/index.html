@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:," />
   <title>FaceTempo · 3D Drive Preview</title>
   <style>
     :root {
@@ -74,6 +75,8 @@
       </div>
 
       <div class="meta" id="meta"></div>
+      <pre id="glb-error" style="display:none;margin:0;padding:8px;border-radius:8px;
+        background:#2a0f14;color:#fca5a5;font-size:.7rem;white-space:pre-wrap;"></pre>
 
       <div class="controls">
         <button id="play">⏸ 暂停</button>
@@ -93,12 +96,18 @@
       <div class="section-title">52 channels</div>
       <div class="channels" id="channels"></div>
 
-      <p class="hint">空格播放/暂停 · 拖动进度条拖动时间轴。模型为程序化示意头，眼睑、嘴角、下颌、眉毛由对应通道实时驱动。</p>
+      <p class="hint">空格播放/暂停 · 拖动进度条拖动时间轴。模型优先加载 model.glb；缺失时回退程序化示意头。</p>
     </aside>
   </div>
 
-  <script src="vendor/three.min.js"></script>
-  <script src="vendor/GLTFLoader.js"></script>
-  <script src="app.js"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three.module.js",
+        "three/addons/": "./vendor/jsm/"
+      }
+    }
+  </script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>

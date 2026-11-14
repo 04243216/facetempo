@@ -114,6 +114,14 @@ venv\Scripts\python.exe src\translator\serve_preview.py
 若在 `src/translator/web_preview/model.glb` 放入带 52 个 morph targets 的 ARKit 模型，
 页面会自动优先加载，并按通道名绑定；找不到或没有匹配的 morph target 时回退到程序化头。
 
+自动获取 three.js 示例的 ARKit 模型（52 个形态键，约 325 KB）：
+
+```powershell
+venv\Scripts\python.exe src\translator\auto_fetch_model.py
+```
+
+FBX 需要本机安装 Blender；转换失败或无 Blender 时见 `src/translator/BLENDER_GUIDE.md`。
+
 CSV 列为 `frame, face_found, ear_l, ear_r, mar, brow, smile_lift, mouth_width, eye_aspect_ratio_geo`，**每帧一行**；未检出脸时 `face_found=0`、特征列为 NaN。加 `--blendshapes` 后再追加 52 个原始 Blendshape 与 52 个 `_smooth` 列。
 
 ### 后续阶段（未实现）
