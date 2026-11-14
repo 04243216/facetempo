@@ -69,6 +69,13 @@ button.primary {
 }
 button.primary:hover { background: #123c66 !important; }
 footer { display: none !important; }
+
+/* 强制深色时的局部配色（Gradio 自带 dark 变量） */
+.dark #hero h1 { color: #e2e8f0; }
+.dark #hero p { color: #94a3b8; }
+.dark #baseline { background: #132033; color: #cbd5e1; border-left-color: #38bdf8; }
+.dark button.primary { background: #1d4ed8 !important; }
+.dark button.primary:hover { background: #2563eb !important; }
 """
 
 
@@ -173,19 +180,41 @@ def _plot_result(mar: np.ndarray, jerk: float, out_path: Path) -> None:
     plt.close(fig)
 
 
+def generate_prompt_fix(jerk_score: float, missing_features: list[str] | None = None) -> str:
+    """根据 Jerk 分数与缺失特征，生成可直接复制的 AI 视频优化提示词。"""
+    missing_features = missing_features or []
+    if jerk_score >= JERK_THRESHOLD:
+        return "视频面部动态真实，微颤能量达标，无需优化。"
+
+    issues = "、".join(missing_features) if missing_features else "眼周微颤不足"
+    return f"""发现缺陷：{issues}（Jerk = {jerk_score:.2f}，低于参考阈值 {JERK_THRESHOLD:g}）。
+
+建议向 AI 视频工具输入以下优化提示词（可直接复制）：
+
+电影级极高画质，正脸特写，4K，自然光。人物面对镜头自然微笑并轻轻眨眼。
+重点要求：
+1. 面部肌肉要有真实的微小抽动（micro-tremors），不要整张脸像橡皮膜一样平滑；
+2. 微笑时眼周肌肉（眼轮匝肌）自然收缩，出现轻微眯眼与卧蚕；
+3. 嘴角上扬与回落要有自然的启动/收尾过渡，避免机械式匀速运动；
+4. 保留皮肤纹理、细小表情纹和不规则眨眼节奏；
+5. 避免塑料感、过度磨皮、冻结表情和循环播放感。
+
+负面提示：塑料感、橡皮膜、过度平滑、假笑、表情冻结、AI 磨皮。"""
+
+
 def analyze(video_path, progress=None):
     """核心回调：返回 (Markdown 结论, 图片路径)。"""
     if isinstance(video_path, dict):
         video_path = video_path.get("path") or video_path.get("name")
     if not video_path:
-        return "请先上传一段正脸视频。", None
+        return "请先上传一段正脸视频。", None, ""
 
     path = Path(video_path)
     with _LOCK:
         try:
             df = _extract_series(path, progress)
         except Exception as exc:  # 给界面返回可读错误
-            return f"处理失败：{exc}", None
+            return f"处理失败：{exc}", None, ""
 
         valid = df.dropna(subset=["face_cx", "face_cy", "face_w"])
         coverage = len(valid) / len(df)
@@ -210,7 +239,19 @@ def analyze(video_path, progress=None):
         hf = hf_ratio(eye_rs, TARGET_FPS)
 
         if not np.isfinite(norm_jerk):
-            return "有效眼周信号不足，无法计算微颤指标。", None
+            return "有效眼周信号不足，无法计算微颤指标。", None, ""
+
+        mar_std = float(np.nanstd(df["mar"].to_numpy(dtype=float)))
+        missing_features = []
+        if norm_jerk < JERK_THRESHOLD:
+            missing_features.append("眼周微颤不足")
+        if hf < 0.02:
+            missing_features.append("眼周高频能量偏低")
+        if mar_std < 0.05:
+            missing_features.append("嘴部表情幅度偏小")
+        if coverage < 0.95:
+            missing_features.append("人脸稳定性不足")
+        prompt = generate_prompt_fix(norm_jerk, missing_features)
 
         suspicious = norm_jerk < JERK_THRESHOLD
         verdict = "疑似 AI 生成 / 过度平滑" if suspicious else "符合真人微颤范围"
@@ -237,7 +278,7 @@ def analyze(video_path, progress=None):
         _plot_result(df["mar"].fillna(0).to_numpy(), norm_jerk, out_path)
         if progress is not None:
             progress(1.0, desc="完成")
-        return result, str(out_path)
+        return result, str(out_path), prompt
 
 
 def build_demo():
@@ -253,7 +294,7 @@ def build_demo():
         gr.HTML(
             """
             <div id="hero">
-              <h1>FaceTempo</h1>
+              <h1>面速 FaceTempo</h1>
               <p>面部位移与表情节奏的量化诊断 · 眼周微颤视角下的真人与 AI 人脸</p>
             </div>
             <div id="scanline"></div>
@@ -290,6 +331,14 @@ def build_demo():
             height=360,
         )
 
+        gr.Markdown("### 反向优化提示词")
+        prompt_box = gr.Textbox(
+            label="🎯 诊断后自动生成（可一键复制）",
+            lines=9,
+            buttons=["copy"],
+            placeholder="若判定为 AI 生成，这里会出现可直接用于重新生成的提示词……",
+        )
+
         gr.Markdown(
             "**方法**：MediaPipe FaceLandmarker（478 点 + 52 Blendshape）→ "
             "眨眼屏蔽 → 统一 25 fps 重采样 → 归一化 Jerk = mean|d²x|·fps² / std(x)。"
@@ -298,7 +347,14 @@ def build_demo():
         def run_analysis(video_file, progress=gr.Progress()):
             return analyze(video_file, progress)
 
-        button.click(fn=run_analysis, inputs=video, outputs=[result, plot])
+        button.click(fn=run_analysis, inputs=video, outputs=[result, plot, prompt_box])
+
+        demo.load(
+            fn=None,
+            inputs=None,
+            outputs=None,
+            js="() => { document.documentElement.classList.add('dark'); }",
+        )
 
     # Gradio 6 起 theme/css 通过 launch() 传入
     demo._facetempo_theme = theme
