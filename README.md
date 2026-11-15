@@ -2,6 +2,14 @@
 
 **Diagnose the uncanny. Deconstruct the face.**
 
+> ⚠️ **Note on 3D Feature / 3D 功能说明**
+> The online demo hosted on ModelScope is a **"Pure Diagnosis"** version.
+> Due to the reverse-proxy restrictions of the free cloud environment, the **3D Real-time Reconstruction** module is currently disabled online.
+> To experience the full pipeline (Video ➡️ 52-Channel JSON ➡️ 3D Head Driving), please clone this repository and run it locally:
+> `python src/app/app.py`
+>
+> **中文说明**：由于魔搭（ModelScope）免费云端环境的反向代理限制，线上 Demo 暂时隐藏了 3D 实时复现模块。如果想查看完整的“视频转 3D 驱动”效果，请将代码下载到本地运行。
+
 [English](#english) · [中文](#中文)
 
 ---
