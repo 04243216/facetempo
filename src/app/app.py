@@ -43,6 +43,23 @@ MODEL_PATH = PROJECT_ROOT / "models" / "face_landmarker.task"
 JSON_DIR = PROJECT_ROOT / "outputs" / "app_json"
 WEB_PREVIEW_DIR = SRC_DIR / "translator" / "web_preview"
 JERK_THRESHOLD = 60.0
+CLOUD_NOTE = (
+    '<div style="padding:22px;text-align:center;color:#94a3b8;'
+    'border:1px dashed #334155;border-radius:12px;line-height:1.8">'
+    "💡 云端为纯诊断版<br>本地运行 <code>python src/app/app.py</code> 可查看 3D 复现效果"
+    "</div>"
+)
+
+
+def is_cloud() -> bool:
+    """云端模式：显式 FACETEMPO_CLOUD，或常见平台环境变量。"""
+    flag = os.environ.get("FACETEMPO_CLOUD")
+    if flag is not None:
+        return flag.strip().lower() in {"1", "true", "yes", "on"}
+    return any(
+        os.environ.get(key)
+        for key in ("SPACE_ID", "MODELSCOPE_ENVIRONMENT", "MODELSCOPE_DOMAIN")
+    )
 
 _CHANNELS: list[str] = []
 # 图表统一使用英文标签，避免浏览器翻译/中文字体导致的乱码
@@ -371,8 +388,11 @@ def analyze(video_path, progress=None):
         _plot_result(df["mar"].fillna(0).to_numpy(), norm_jerk, out_path)
 
         try:
-            json_name = _export_driving_json(df, path, fps)
-            viewer = viewer_html(json_name)
+            if is_cloud():
+                viewer = CLOUD_NOTE
+            else:
+                json_name = _export_driving_json(df, path, fps)
+                viewer = viewer_html(json_name)
         except Exception as exc:  # 3D 预览失败不影响诊断结果
             viewer = (
                 '<div style="padding:16px;border:1px solid #7f1d1d;border-radius:10px;'
@@ -387,7 +407,9 @@ def analyze(video_path, progress=None):
 def build_demo():
     import gradio as gr
 
-    _patch_gradio_app_factory()
+    cloud = is_cloud()
+    if not cloud:
+        _patch_gradio_app_factory()
 
     theme = gr.themes.Soft(
         primary_hue="blue",
@@ -436,11 +458,15 @@ def build_demo():
             height=340,
         )
 
-        gr.Markdown("### 3D 复现")
+        gr.Markdown("### 3D 复现" if not cloud else "### 3D 复现（云端关闭）")
         viewer = gr.HTML(
-            "<div style='padding:26px;text-align:center;color:#94a3b8;"
-            "border:1px dashed #1e293b;border-radius:12px'>"
-            "诊断完成后，这里会加载 3D 驱动预览（52 通道驱动）。</div>"
+            CLOUD_NOTE
+            if cloud
+            else (
+                "<div style='padding:26px;text-align:center;color:#94a3b8;"
+                "border:1px dashed #1e293b;border-radius:12px'>"
+                "诊断完成后，这里会加载 3D 驱动预览（52 通道驱动）。</div>"
+            )
         )
 
         gr.Markdown("### 反向优化提示词")
@@ -482,14 +508,17 @@ if __name__ == "__main__":
     demo = build_demo()
     demo.queue(default_concurrency_limit=1)
     port = int(os.environ.get("GRADIO_SERVER_PORT", "7860"))
+    cloud = is_cloud()
+    launch_kwargs = {
+        "server_name": "0.0.0.0" if cloud else "127.0.0.1",
+        "server_port": port,
+        "show_error": True,
+    }
+    if not cloud:
+        launch_kwargs["theme"] = demo._facetempo_theme
+        launch_kwargs["css"] = demo._facetempo_css
     try:
-        demo.launch(
-            server_name="127.0.0.1",
-            server_port=port,
-            show_error=True,
-            theme=demo._facetempo_theme,
-            css=demo._facetempo_css,
-        )
+        demo.launch(**launch_kwargs)
     except KeyboardInterrupt:
         sys.stdout.flush()
         os._exit(0)

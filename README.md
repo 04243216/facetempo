@@ -89,6 +89,8 @@ python src/app/app.py
 上传正脸视频即可得到：归一化眼周 Jerk、MAR 曲线、52 通道 JSON 驱动的 3D 复现，
 以及一段可直接粘贴回 AI 视频工具的优化提示词。
 
+> 云端部署默认纯诊断模式（`FACETEMPO_CLOUD=1`），隐藏 3D；本地运行可见完整 3D 复现。
+
 ### 文档
 
 - [技术报告](README_technical_report.md)

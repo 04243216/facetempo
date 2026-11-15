@@ -11,14 +11,13 @@ Hugging Face Spaces（免费 CPU）+ GitHub 的完整上线步骤。
 ```
 https://<user>-facetempo.hf.space/
 ├── /                          Gradio 诊断控制台
-├── /preview/index.html        3D 预览页（Three.js）
+├── /preview/index.html        3D 预览页（仅本地/非云模式）
 └── /data/<name>.json          每次上传生成的 52 通道驱动数据
 ```
 
-- 不再依赖 `127.0.0.1:8000` 的第二个服务；
-- `app.py` 启动时若 `src/translator/web_preview/model.glb` 不存在，会自动下载
-  three.js 的 ARKit 示例模型（约 325 KB）；
-- 下载失败不会阻塞诊断，3D 预览自动回退到程序化头。
+**云端默认纯诊断版**：设置 `FACETEMPO_CLOUD=1` 时隐藏 3D、跳过 JSON 导出与静态路由，
+只保留诊断表、MAR 曲线、反向优化提示词，避免反向代理导致的路由问题。
+本地运行 `python src/app/app.py` 仍可看到完整 3D。
 
 ---
 
@@ -191,10 +190,11 @@ git push -u origin main
 
 - [ ] Space 状态为 `Running`
 - [ ] 首页能打开，诊断按钮可用
-- [ ] `/preview/index.html` 返回 200
-- [ ] 上传视频后：Jerk 数值、MAR 曲线、提示词、3D 复现都出现
+- [ ] 上传视频后：Jerk 数值、MAR 曲线、提示词正常
 - [ ] 手机浏览器能打开同一个链接
 - [ ] GitHub README 中的 Space 链接已更新
+
+> 云端纯诊断版不显示 3D；本地 `python src/app/app.py` 可验证 3D 复现。
 
 ---
 
@@ -226,9 +226,8 @@ outputs/app_json / outputs/translator
 3. 把 `facetempo_deploy` 里的**内容**（不是外层文件夹）全选拖入创空间根目录，
    保持 `src/`、`models/`、`outputs/` 的目录结构。
 4. 启动命令填 `python app.py`，端口 `7860`。
-5. 构建完成后访问：
-   - 首页：`https://<space>.modelscope.cn/`
-   - 3D：`https://<space>.modelscope.cn/preview/index.html`
+5. 构建完成后访问首页：`https://<space>.modelscope.cn/`。
+   云端默认纯诊断模式，**不会显示 3D 区域**；3D 请本地运行查看。
 
 若魔搭不支持 `packages.txt` 的 apt 安装、且构建时报 `libGL.so.1`，
 需要在自定义镜像中安装 `libgl1 libglib2.0-0 libsm6 libxext6 ffmpeg`，

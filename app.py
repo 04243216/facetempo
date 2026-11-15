@@ -27,15 +27,21 @@ def _ensure_model() -> None:
 
 _ensure_model()
 
-from src.app.app import build_demo  # noqa: E402
+os.environ.setdefault("FACETEMPO_CLOUD", "1")
+
+from src.app.app import build_demo, is_cloud  # noqa: E402
 
 demo = build_demo()
 
 if __name__ == "__main__":
     demo.queue(default_concurrency_limit=1)
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=int(os.environ.get("GRADIO_SERVER_PORT", "7860")),
-        theme=demo._facetempo_theme,
-        css=demo._facetempo_css,
-    )
+    cloud = is_cloud()
+    kwargs = {
+        "server_name": "0.0.0.0" if cloud else "127.0.0.1",
+        "server_port": int(os.environ.get("GRADIO_SERVER_PORT", "7860")),
+        "show_error": True,
+    }
+    if not cloud:
+        kwargs["theme"] = demo._facetempo_theme
+        kwargs["css"] = demo._facetempo_css
+    demo.launch(**kwargs)
