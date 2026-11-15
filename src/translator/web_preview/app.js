@@ -35,7 +35,8 @@ async function init() {
   try {
     const params = new URLSearchParams(location.search);
     const jsonName = params.get("json") || "driving.json";
-    const response = await fetch(`/data/${encodeURIComponent(jsonName)}`, { cache: "no-store" });
+    // 相对路径：iframe 在 /preview/ 下，../data/ 回到应用根，兼容代理前缀
+    const response = await fetch(`../data/${encodeURIComponent(jsonName)}`, { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     state.data = await response.json();
   } catch (err) {

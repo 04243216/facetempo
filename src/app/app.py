@@ -283,11 +283,15 @@ def _patch_gradio_app_factory() -> None:
 
 
 def viewer_html(json_name: str) -> str:
-    url = f"/preview/index.html?json={quote(json_name, safe='')}"
+    # 相对路径：兼容魔搭/HF 的代理前缀，不再依赖域名根目录
+    url = f"preview/index.html?json={quote(json_name, safe='')}"
     return (
         f'<iframe src="{url}" loading="lazy" '
         'style="width:100%;height:560px;border:1px solid #1e293b;'
         'border-radius:12px;background:#070d19"></iframe>'
+        '<div style="margin-top:8px;font-size:12px;color:#94a3b8">'
+        f'3D 预览打不开？<a href="{url}" target="_blank" rel="noopener">在新标签打开</a>'
+        "</div>"
     )
 
 

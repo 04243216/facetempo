@@ -152,6 +152,8 @@ git push
 | 构建失败：`libGL.so.1: cannot open shared object` | 缺系统库 | 确认 `packages.txt` 已上传，包含 `libgl1`、`libglib2.0-0` |
 | 3D 区域空白 | `model.glb` 下载失败 / 浏览器拦截 | 访问 `/preview/index.html` 看是否 200；看浏览器 Console；可手动上传 `model.glb` 到 `src/translator/web_preview/` |
 | 页面 404 `/preview/...` | 静态路由未注册 | 确认使用仓库内的 `src/app/app.py`（已注入 Gradio `create_app`） |
+| 3D 区域显示二进流/乱码 | 应用挂在域名子路径下，iframe 用了绝对 `/preview` | 已改为相对 `preview/index.html`；拉取最新代码并重新构建 |
+| 3D 区域只有文字没有画面 | iframe 跨域或代理拦截 | 点“在新标签打开”直达 `preview/index.html` 排查 |
 | 端口冲突 | 7860 被占用 | 本地设置 `GRADIO_SERVER_PORT=7862` 后重试 |
 | 上传视频后无响应 | 视频过长/分辨率过高 | 先用 3–10 秒、1080p 以内测试；免费 CPU 处理 1440p 约 15–30 秒 |
 
