@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FaceTempo · 生成式人脸微表情时序动力学诊断</title>
+<style>
+  :root {
+    --bg: #05070f;
+    --bg-2: #0a1020;
+    --card: rgba(15, 23, 42, 0.72);
+    --line: rgba(148, 163, 184, 0.18);
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --cyan: #38bdf8;
+    --violet: #a78bfa;
+    --pink: #f472b6;
+    --green: #34d399;
+    --amber: #fbbf24;
+    --mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 700px at 12% -10%, rgba(56, 189, 248, 0.16), transparent 60%),
+      radial-gradient(900px 600px at 90% 10%, rgba(167, 139, 250, 0.14), transparent 60%),
+      radial-gradient(800px 500px at 50% 100%, rgba(244, 114, 182, 0.07), transparent 60%),
+      var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    line-height: 1.7;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(rgba(148, 163, 184, 0.045) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(148, 163, 184, 0.045) 1px, transparent 1px);
+    background-size: 46px 46px;
+    mask-image: radial-gradient(circle at 50% 20%, black, transparent 78%);
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 28px 90px; position: relative; }
+  a { color: var(--cyan); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .download {
+    position: fixed; top: 20px; right: 22px; z-index: 20;
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 10px 16px; border-radius: 999px;
+    background: linear-gradient(120deg, rgba(56, 189, 248, 0.18), rgba(167, 139, 250, 0.18));
+    border: 1px solid rgba(56, 189, 248, 0.45);
+    color: #e0f2fe; font-size: 0.82rem; font-weight: 600; cursor: pointer;
+    backdrop-filter: blur(12px);
+  }
+  .download:hover { border-color: var(--cyan); color: #fff; }
+
+  header.hero { padding: 92px 0 30px; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 0.76rem; letter-spacing: 0.22em;
+    text-transform: uppercase; color: var(--cyan); margin-bottom: 16px;
+  }
+  h1 {
+    margin: 0; font-size: clamp(3.1rem, 8vw, 5.9rem); line-height: 1.02;
+    letter-spacing: -0.045em; font-weight: 800;
+    background: linear-gradient(100deg, #e0f2fe 0%, #38bdf8 32%, #a78bfa 66%, #f472b6 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .subtitle { margin: 18px 0 0; font-size: clamp(1.05rem, 2.1vw, 1.45rem); color: #cbd5e1; }
+  .lead { max-width: 760px; margin: 16px 0 0; color: var(--muted); font-size: 0.98rem; }
+  .tags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+  .tag {
+    font-family: var(--mono); font-size: 0.72rem; padding: 5px 10px;
+    border: 1px solid var(--line); border-radius: 999px;
+    color: #cbd5e1; background: rgba(15, 23, 42, 0.55);
+  }
+
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 44px; }
+  .kpi {
+    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+    padding: 18px 18px 16px; backdrop-filter: blur(10px);
+  }
+  .kpi .label { font-size: 0.72rem; color: var(--muted); letter-spacing: 0.06em; }
+  .kpi .num {
+    font-family: var(--mono); font-size: clamp(1.6rem, 3.5vw, 2.15rem);
+    font-weight: 700; margin-top: 4px;
+    background: linear-gradient(100deg, #67e8f9, #a78bfa);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .kpi .num.green { background: linear-gradient(100deg, #34d399, #67e8f9); -webkit-background-clip: text; background-clip: text; }
+  .kpi .note { font-size: 0.72rem; color: #64748b; margin-top: 4px; }
+
+  section { margin-top: 76px; }
+  .section-head {
+    display: flex; align-items: baseline; gap: 14px;
+    border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 24px;
+  }
+  .section-num { font-family: var(--mono); color: var(--cyan); font-size: 0.8rem; }
+  h2 { margin: 0; font-size: clamp(1.25rem, 2.6vw, 1.65rem); letter-spacing: -0.01em; }
+  .section-head .en { color: #64748b; font-size: 0.78rem; font-family: var(--mono); margin-left: auto; }
+
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 18px;
+    padding: 24px; backdrop-filter: blur(10px); box-shadow: 0 18px 50px rgba(2, 6, 23, 0.35);
+  }
+  .grid-2 { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 16px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  h3 { margin: 0 0 10px; font-size: 1rem; color: #e2e8f0; }
+  p { margin: 0 0 10px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 0.84rem; }
+  .mono { font-family: var(--mono); }
+
+  .quote {
+    border-left: 3px solid var(--violet); padding: 8px 0 8px 18px;
+    color: #cbd5e1; font-size: 1.02rem;
+  }
+
+  .flow { display: grid; grid-template-columns: repeat(7, auto); align-items: center; gap: 10px; }
+  .flow .step {
+    border: 1px solid var(--line); border-radius: 14px; padding: 14px 12px;
+    background: rgba(9, 14, 28, 0.75); text-align: center; min-width: 0;
+  }
+  .flow .step b { display: block; font-size: 0.86rem; }
+  .flow .step span { display: block; font-size: 0.68rem; color: var(--muted); margin-top: 4px; }
+  .flow .arrow { color: var(--cyan); font-family: var(--mono); text-align: center; font-size: 1.1rem; }
+  .flow .step.accent { border-color: rgba(56, 189, 248, 0.5); box-shadow: 0 0 24px rgba(56, 189, 248, 0.12) inset; }
+
+  .formula {
+    font-family: var(--mono); font-size: 0.9rem; color: #bae6fd;
+    background: rgba(2, 6, 23, 0.7); border: 1px solid var(--line);
+    border-radius: 12px; padding: 14px 16px; overflow-x: auto;
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .chip { font-size: 0.72rem; color: #cbd5e1; border: 1px solid var(--line); border-radius: 999px; padding: 4px 9px; }
+
+  .chart { width: 100%; height: auto; display: block; }
+  .chart-card { padding: 18px 18px 12px; }
+  .chart-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+  .chart-title b { font-size: 0.9rem; }
+  .chart-title span { font-size: 0.72rem; color: var(--muted); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); }
+  th { color: #64748b; font-weight: 500; font-size: 0.72rem; letter-spacing: 0.04em; }
+  td.num { font-family: var(--mono); color: #e2e8f0; }
+  .ok { color: var(--green); }
+  .warn { color: var(--amber); }
+
+  .badge {
+    display: inline-block; font-family: var(--mono); font-size: 0.7rem;
+    padding: 3px 9px; border-radius: 999px;
+    background: rgba(52, 211, 153, 0.1); color: #6ee7b7; border: 1px solid rgba(52, 211, 153, 0.3);
+  }
+  .badge.violet { background: rgba(167, 139, 250, 0.1); color: #c4b5fd; border-color: rgba(167, 139, 250, 0.3); }
+  .badge.amber { background: rgba(251, 191, 36, 0.1); color: #fcd34d; border-color: rgba(251, 191, 36, 0.3); }
+
+  pre {
+    margin: 12px 0 0; padding: 16px; border-radius: 14px;
+    background: rgba(2, 6, 23, 0.78); border: 1px solid var(--line);
+    color: #cbd5e1; font-family: var(--mono); font-size: 0.74rem;
+    overflow-x: auto; line-height: 1.65;
+  }
+  pre .k { color: #7dd3fc; }
+  pre .s { color: #fcd34d; }
+  pre .c { color: #64748b; }
+
+  .links { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
+  .link {
+    flex: 1 1 240px; display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; padding: 16px 18px; border-radius: 14px;
+    border: 1px solid var(--line); background: rgba(9, 14, 28, 0.7); color: #e2e8f0;
+  }
+  .link:hover { border-color: var(--cyan); text-decoration: none; }
+  .link b { display: block; font-size: 0.9rem; }
+  .link span { display: block; font-size: 0.72rem; color: var(--muted); }
+
+  footer { margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--line); color: #64748b; font-size: 0.78rem; }
+  footer .row { display: flex; flex-wrap: wrap; gap: 8px 18px; justify-content: space-between; }
+
+  @media (max-width: 980px) {
+    .kpis { grid-template-columns: 1fr 1fr; }
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+    .flow { grid-template-columns: 1fr; }
+    .flow .arrow { transform: rotate(90deg); padding: 2px 0; }
+    .download { top: 12px; right: 12px; }
+    header.hero { padding-top: 76px; }
+  }
+  @media print {
+    @page { margin: 12mm; }
+    .download { display: none !important; }
+    body { background: #05070f !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    body::before { display: none; }
+    section { break-inside: avoid; }
+    .card, .kpi { box-shadow: none; }
+  }
+</style>
+</head>
+<body>
+<button class="download" id="download">⬇ 下载本报告 HTML</button>
+
+<div class="wrap">
+
+  <header class="hero">
+    <div class="eyebrow">FACETEMPO / MICRO-TREMOR DIAGNOSTICS</div>
+    <h1>FaceTempo</h1>
+    <p class="subtitle">生成式人脸微表情时序动力学诊断</p>
+    <p class="lead">
+      不只看一帧像不像，而是看时间维度上“动得对不对”。用眼周归一化微颤区分真人与 AI 生成人脸，
+      并把真人表演导出为 52 通道 Blendshape JSON，驱动 3D 头部复现。
+    </p>
+    <div class="tags">
+      <span class="tag">MediaPipe FaceLandmarker</span>
+      <span class="tag">478 landmarks</span>
+      <span class="tag">52 blendshapes</span>
+      <span class="tag">exact permutation test</span>
+      <span class="tag">Three.js / GLB</span>
+    </div>
+
+    <div class="kpis">
+      <div class="kpi">
+        <div class="label">真人眼周 Jerk 中位数</div>
+        <div class="num">77.29</div>
+        <div class="note">主队列 4 条，范围 67.03–105.70</div>
+      </div>
+      <div class="kpi">
+        <div class="label">AI 眼周 Jerk 中位数</div>
+        <div class="num">35.63</div>
+        <div class="note">主队列 4 条，范围 21.63–55.03</div>
+      </div>
+      <div class="kpi">
+        <div class="label">主队列显著性</div>
+        <div class="num green">p = 0.0143</div>
+        <div class="note">单侧精确置换检验，4v4 下限</div>
+      </div>
+      <div class="kpi">
+        <div class="label">机器语言输出</div>
+        <div class="num">52</div>
+        <div class="note">每帧通道数 · 203 帧 / 331 KB JSON</div>
+      </div>
+    </div>
+  </header>
+
+  <section>
+    <div class="section-head">
+      <span class="section-num">01</span>
+      <h2>问题不在单帧，而在时间</h2>
+      <span class="en">THE UNCANNY IS TEMPORAL</span>
+    </div>
+    <div class="grid-2">
+      <div class="card">
+        <h3>AI 的“塑料感”从哪来</h3>
+        <p class="muted small">
+          生成模型可以把皮肤、毛发、光照做得足够真，但真人的面部在保持表情时仍存在持续的
+          微小抽动与高频调整。AI 结果往往帧间过于平滑、眨眼过于规律，缺少这种不自主的微颤。
+        </p>
+        <div class="quote">
+          “单帧看不出问题，逐帧的二阶差分里全是证据。”
+        </div>
+        <p class="muted small" style="margin-top:14px">
+          本项目把这种差异量化为 <b class="mono">归一化眼周 Jerk</b>：
+          单位幅度下的高频加速度能量。它不依赖画质，也不把“没动”误判成“平滑”。
+        </p>
+      </div>
+      <div class="card">
+        <h3>三个必须处理的混杂</h3>
+        <p class="small"><span class="badge amber">1</span> 眨眼会主导眼周高频能量 → 计算前屏蔽眨眼帧及前后 2 帧。</p>
+        <p class="small"><span class="badge violet">2</span> 24 / 25 / 60 fps 混用会让逐帧差分失真 → 统一重采样到 25 fps。</p>
+        <p class="small"><span class="badge">3</span> 侧脸、遮挡、甩头会让关键点整体偏移 → 覆盖率与头动门控直接判无效。</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <span class="section-num">02</span>
+      <h2>双通道特征与诊断管线</h2>
+      <span class="en">PIPELINE</span>
+    </div>
+    <div class="card">
+      <div class="flow">
+        <div class="step"><b>视频输入</b><span>正脸 / 固定机位</span></div>
+        <div class="arrow">→</div>
+        <div class="step"><b>双通道特征</b><span>几何 + 52 Blendshape</span></div>
+        <div class="arrow">→</div>
+        <div class="step accent"><b>归一化 Jerk</b><span>25 fps · 眨眼屏蔽</span></div>
+        <div class="arrow">→</div>
+        <div class="step"><b>诊断 / JSON / 3D</b><span>报告 · 提示词 · 驱动</span></div>
+      </div>
+
+      <div class="grid-2" style="margin-top:20px">
+        <div>
+          <h3>核心指标</h3>
+          <div class="formula">normalized_jerk = mean(|d²x|) · fps² / std(x)</div>
+          <div class="chips">
+            <span class="chip">眨眼屏蔽 ±2 帧</span>
+            <span class="chip">3 帧中值平滑</span>
+            <span class="chip">统一 25 fps</span>
+            <span class="chip">精确置换检验</span>
+            <span class="chip">质量门控</span>
+          </div>
+        </div>
+        <div>
+          <h3>质量门控</h3>
+          <table>
+            <tr><th>门控</th><th>阈值</th></tr>
+            <tr><td>人脸覆盖率</td><td class="num">≥ 95%</td></tr>
+            <tr><td>头部速度</td><td class="num">&lt; 0.5 脸宽/秒</td></tr>
+            <tr><td>最大偏移</td><td class="num">&lt; 1.5 脸宽</td></tr>
+            <tr><td>眼通道一致性</td><td class="num">&lt; 0（低方差记 N/A）</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <span class="section-num">03</span>
+      <h2>数据实证：两组完全无重叠</h2>
+      <span class="en">EVIDENCE</span>
+    </div>
+
+    <div class="card chart-card" style="margin-bottom:16px">
+      <div class="chart-title">
+        <b>主队列 · 归一化眼周 Jerk</b>
+        <span>4 真人 vs 4 AI · 单侧精确置换 p = 0.0143</span>
+      </div>
+      <svg id="mainChart" class="chart" viewBox="0 0 900 430" role="img" aria-label="真人、AI、假笑三组归一化眼周 Jerk 柱状图"></svg>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <h3>主队列数值</h3>
+        <table>
+          <tr><th>组</th><th>各条数值</th><th>中位数</th></tr>
+          <tr><td>真人自然</td><td class="num">105.70 / 67.59 / 86.99 / 67.03</td><td class="num">77.29</td></tr>
+          <tr><td>AI 生成</td><td class="num">27.02 / 21.63 / 44.25 / 55.03</td><td class="num">35.63</td></tr>
+          <tr><td>真人假笑</td><td class="num">65.89 / 55.49 / 63.75 / 41.34</td><td class="num">59.62</td></tr>
+        </table>
+        <p class="muted small" style="margin-top:12px">
+          真人最小值 67.03 &gt; AI 最大值 55.03，两组无任何重叠。
+          假笑组落在中间，符合“仍有真人肌肉底噪、但眼周动态偏弱”的预期。
+        </p>
+      </div>
+      <div class="card">
+        <h3>独立盲测 · 2v2</h3>
+        <table>
+          <tr><th>组</th><th>数值</th></tr>
+          <tr><td>真人</td><td class="num">40.51 / 96.20</td></tr>
+          <tr><td>AI</td><td class="num">26.65 / 18.31</td></tr>
+        </table>
+        <p class="muted small" style="margin-top:12px">
+          两个指标都零重叠，方向完全复现。p = 0.1667 是 2v2 的数学下限，
+          只能作为方向性支持，不包装成显著性验证。
+        </p>
+        <span class="badge">zero overlap</span>
+        <span class="badge violet">p floor 0.1667</span>
+      </div>
+    </div>
+
+    <div class="card chart-card" style="margin-top:16px">
+      <div class="chart-title">
+        <b>盲测集 · 归一化眼周 Jerk</b>
+        <span>真人 40.51 / 96.20 · AI 26.65 / 18.31</span>
+      </div>
+      <svg id="holdoutChart" class="chart" viewBox="0 0 900 300" role="img" aria-label="盲测集真人高于AI的散点图"></svg>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <span class="section-num">04</span>
+      <h2>从诊断到解构：工程闭环</h2>
+      <span class="en">DIAGNOSIS → DECONSTRUCTION</span>
+    </div>
+    <div class="grid-3">
+      <div class="card">
+        <h3>① 反向优化提示词</h3>
+        <p class="muted small">Jerk 低于阈值 60 时，自动生成可直接粘贴回 AI 视频工具的提示词。</p>
+        <pre><span class="c"># 输出示例</span>
+发现缺陷：眼周微颤不足
+Jerk = 27.02 &lt; 60
+
+电影级极高画质，正脸特写，4K。
+重点要求：面部肌肉要有真实的
+微小抽动，眼周自然收缩，
+避免塑料感与橡皮膜质感。</pre>
+      </div>
+      <div class="card">
+        <h3>② 52 通道 JSON</h3>
+        <p class="muted small">把真人表演导出为 ARKit 风格的标准机器语言，逐帧带时间戳。</p>
+        <pre>{
+ <span class="k">"meta"</span>: { <span class="k">"fps"</span>: 25,
+   <span class="k">"total_frames"</span>: 203 },
+ <span class="k">"frames"</span>: [{
+   <span class="k">"frame"</span>: 0,
+   <span class="k">"time"</span>: 0.0,
+   <span class="k">"blendshapes"</span>: {
+     <span class="k">"eyeBlinkLeft"</span>: 0.05,
+     <span class="k">"mouthSmile_L"</span>: 0.12
+   }
+ }]
+}</pre>
+      </div>
+      <div class="card">
+        <h3>③ 3D 驱动</h3>
+        <p class="muted small">
+          Three.js 加载 JSON，自动绑定 GLB 的 morph targets；无模型时回退到程序化头部。
+        </p>
+        <pre>video → 52 channels
+      → driving.json
+      → GLB morph targets
+      → 实时 3D 复现
+
+<span class="c"># 本地启动</span>
+python src/app/app.py</pre>
+        <span class="badge amber">云端纯诊断</span>
+        <span class="badge">本地完整 3D</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <span class="section-num">05</span>
+      <h2>边界与诚实说明</h2>
+      <span class="en">LIMITATIONS</span>
+    </div>
+    <div class="card">
+      <div class="grid-2">
+        <div>
+          <h3>不能过度解读的地方</h3>
+          <p class="small muted">• 主队列每组 4 条，p 已触到 4v4 的数学下限。</p>
+          <p class="small muted">• 盲测 2v2 只能证明方向复现，不能证明显著。</p>
+          <p class="small muted">• 真人/AI 素材分辨率与压缩条件不完全一致，存在画质混杂。</p>
+          <p class="small muted">• 结论只适用于本批受控样本，不能外推到所有生成工具。</p>
+        </div>
+        <div>
+          <h3>我们做对的工程细节</h3>
+          <p class="small muted">• 先处理混杂（眨眼、帧率、头动），再比较数值。</p>
+          <p class="small muted">• 质量门控拒绝的样本保留原因，不静默删除。</p>
+          <p class="small muted">• 盲测不参与调参，结论分开写。</p>
+          <p class="small muted">• 云端隐藏 3D 换取稳定性，本地保留完整解构能力。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <span class="section-num">06</span>
+      <h2>项目入口</h2>
+      <span class="en">LINKS</span>
+    </div>
+    <div class="links">
+      <a class="link" href="https://modelscope.cn/studios/Guo0704/facetempo-final" target="_blank" rel="noopener">
+        <div><b>线上 Demo（魔搭）</b><span>纯诊断版 · 上传视频出报告</span></div>
+        <span>↗</span>
+      </a>
+      <a class="link" href="https://github.com/04243216/facetempo" target="_blank" rel="noopener">
+        <div><b>GitHub 源码</b><span>完整管线 · 技术报告 · 3D 本地版</span></div>
+        <span>↗</span>
+      </a>
+      <a class="link" href="https://github.com/04243216/facetempo/blob/master/README_technical_report.md" target="_blank" rel="noopener">
+        <div><b>技术报告</b><span>方法、统计与局限的完整版</span></div>
+        <span>↗</span>
+      </a>
+    </div>
+  </section>
+
+  <footer>
+    <div class="row">
+      <span>FaceTempo · 生成式人脸微表情时序动力学诊断</span>
+      <span class="mono">2026 · p = 0.0143 · 52 channels</span>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <span>提示：Ctrl / Cmd + S 可保存本页；也可用浏览器“打印 → 另存为 PDF”。</span>
+      <span>Built as a single self-contained HTML file.</span>
+    </div>
+  </footer>
+</div>
+
+<script>
+(function () {
+  const NS = "http://www.w3.org/2000/svg";
+
+  function el(tag, attrs, text) {
+    const node = document.createElementNS(NS, tag);
+    for (const key in attrs) node.setAttribute(key, attrs[key]);
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function addTitle(node, text) {
+    const title = el("title");
+    title.textContent = text;
+    node.appendChild(title);
+  }
+
+  function drawMainChart() {
+    const svg = document.getElementById("mainChart");
+    if (!svg) return;
+    svg.innerHTML = "";
+
+    const W = 900, H = 430;
+    const m = { top: 36, right: 30, bottom: 74, left: 74 };
+    const plotW = W - m.left - m.right;
+    const plotH = H - m.top - m.bottom;
+    const maxY = 120;
+
+    const groups = [
+      { label: "真人 Real", sub: "n=4 · median 77.29", values: [105.70, 67.59, 86.99, 67.03], median: 77.29, color: "#38bdf8", id: "gradReal" },
+      { label: "AI 生成", sub: "n=4 · median 35.63", values: [27.02, 21.63, 44.25, 55.03], median: 35.63, color: "#a78bfa", id: "gradAI" },
+      { label: "真人假笑", sub: "n=4 · median 59.62", values: [65.89, 55.49, 63.75, 41.34], median: 59.62, color: "#fbbf24", id: "gradFake" }
+    ];
+
+    const defs = el("defs");
+    for (const g of groups) {
+      const grad = el("linearGradient", { id: g.id, x1: "0", y1: "0", x2: "0", y2: "1" });
+      grad.appendChild(el("stop", { offset: "0%", "stop-color": g.color, "stop-opacity": "0.55" }));
+      grad.appendChild(el("stop", { offset: "100%", "stop-color": g.color, "stop-opacity": "0.08" }));
+      defs.appendChild(grad);
+    }
+    svg.appendChild(defs);
+
+    // grid
+    for (let v = 0; v <= maxY; v += 30) {
+      const y = m.top + plotH - (v / maxY) * plotH;
+      svg.appendChild(el("line", {
+        x1: m.left, y1: y, x2: W - m.right, y2: y,
+        stroke: "rgba(148,163,184,0.14)", "stroke-width": 1
+      }));
+      svg.appendChild(el("text", {
+        x: m.left - 12, y: y + 4, "text-anchor": "end",
+        fill: "#64748b", "font-size": 11, "font-family": "ui-monospace, Consolas, monospace"
+      }, String(v)));
+    }
+
+    // threshold
+    const ty = m.top + plotH - (60 / maxY) * plotH;
+    svg.appendChild(el("line", {
+      x1: m.left, y1: ty, x2: W - m.right, y2: ty,
+      stroke: "#f472b6", "stroke-width": 1.2, "stroke-dasharray": "6 6", opacity: 0.8
+    }));
+    // threshold line only; label lives in the caption to avoid overlapping bars
+
+    // y label
+    const yLabel = el("text", {
+      x: 20, y: m.top + plotH / 2, "text-anchor": "middle",
+      fill: "#64748b", "font-size": 11,
+      transform: `rotate(-90 20 ${m.top + plotH / 2})`
+    }, "normalized eye jerk (1/s²)");
+    svg.appendChild(yLabel);
+
+    const slot = plotW / groups.length;
+    const barW = 150;
+
+    groups.forEach((g, i) => {
+      const cx = m.left + slot * (i + 0.5);
+      const barX = cx - barW / 2;
+      const barH = (g.median / maxY) * plotH;
+      const barY = m.top + plotH - barH;
+
+      const rect = el("rect", {
+        x: barX, y: barY, width: barW, height: barH, rx: 10,
+        fill: `url(#${g.id})`, stroke: g.color, "stroke-width": 1.2
+      });
+      addTitle(rect, `${g.label} median ${g.median}`);
+      svg.appendChild(rect);
+
+      svg.appendChild(el("text", {
+        x: cx, y: barY + 28, "text-anchor": "middle",
+        fill: "#f8fafc", "font-size": 18, "font-weight": 700,
+        "font-family": "ui-monospace, Consolas, monospace"
+      }, g.median.toFixed(2)));
+
+      // individual dots are shown in the table below; keep bars clean
+
+      svg.appendChild(el("text", {
+        x: cx, y: H - 46, "text-anchor": "middle",
+        fill: "#e2e8f0", "font-size": 13, "font-weight": 600
+      }, g.label));
+      svg.appendChild(el("text", {
+        x: cx, y: H - 26, "text-anchor": "middle",
+        fill: "#64748b", "font-size": 10.5,
+        "font-family": "ui-monospace, Consolas, monospace"
+      }, g.sub));
+    });
+
+    svg.appendChild(el("text", {
+      x: m.left, y: H - 6, "text-anchor": "start",
+      fill: "#475569", "font-size": 10.5
+    }, "bars = group median · dashed = demo threshold 60 · individual values in table"));
+  }
+
+  function drawHoldoutChart() {
+    const svg = document.getElementById("holdoutChart");
+    if (!svg) return;
+    svg.innerHTML = "";
+
+    const W = 900, H = 300;
+    const m = { top: 30, right: 30, bottom: 60, left: 74 };
+    const plotW = W - m.left - m.right;
+    const plotH = H - m.top - m.bottom;
+    const maxY = 120;
+
+    const groups = [
+      { label: "真人 Holdout", values: [40.51, 96.20], color: "#38bdf8" },
+      { label: "AI Holdout", values: [26.65, 18.31], color: "#a78bfa" }
+    ];
+
+    for (let v = 0; v <= maxY; v += 30) {
+      const y = m.top + plotH - (v / maxY) * plotH;
+      svg.appendChild(el("line", {
+        x1: m.left, y1: y, x2: W - m.right, y2: y,
+        stroke: "rgba(148,163,184,0.14)", "stroke-width": 1
+      }));
+      svg.appendChild(el("text", {
+        x: m.left - 12, y: y + 4, "text-anchor": "end",
+        fill: "#64748b", "font-size": 11,
+        "font-family": "ui-monospace, Consolas, monospace"
+      }, String(v)));
+    }
+
+    const ty = m.top + plotH - (60 / maxY) * plotH;
+    svg.appendChild(el("line", {
+      x1: m.left, y1: ty, x2: W - m.right, y2: ty,
+      stroke: "#f472b6", "stroke-width": 1.2, "stroke-dasharray": "6 6", opacity: 0.7
+    }));
+
+    const slot = plotW / groups.length;
+
+    groups.forEach((g, i) => {
+      const cx = m.left + slot * (i + 0.5);
+
+      // connecting line
+      const ys = g.values.map((v) => m.top + plotH - (v / maxY) * plotH);
+      svg.appendChild(el("line", {
+        x1: cx, y1: Math.min(...ys), x2: cx, y2: Math.max(...ys),
+        stroke: g.color, "stroke-width": 2, opacity: 0.35
+      }));
+
+      g.values.forEach((v, j) => {
+        const y = m.top + plotH - (v / maxY) * plotH;
+        const x = cx + (j === 0 ? -26 : 26);
+        const dot = el("circle", {
+          cx: x, cy: y, r: 10, fill: "rgba(5,7,15,0.9)",
+          stroke: g.color, "stroke-width": 2.5
+        });
+        addTitle(dot, `${g.label} ${v}`);
+        svg.appendChild(dot);
+
+        svg.appendChild(el("text", {
+          x: x, y: y - 18, "text-anchor": "middle",
+          fill: g.color, "font-size": 12, "font-weight": 700,
+          "font-family": "ui-monospace, Consolas, monospace"
+        }, v.toFixed(2)));
+      });
+
+      svg.appendChild(el("text", {
+        x: cx, y: H - 26, "text-anchor": "middle",
+        fill: "#e2e8f0", "font-size": 13, "font-weight": 600
+      }, g.label));
+    });
+
+    svg.appendChild(el("text", {
+      x: m.left, y: H - 4, "text-anchor": "start",
+      fill: "#475569", "font-size": 10.5
+    }, "2 real vs 2 AI · zero overlap · p is bounded at 0.1667 for 2v2"));
+  }
+
+  function renderAll() {
+    drawMainChart();
+    drawHoldoutChart();
+  }
+
+  renderAll();
+  window.addEventListener("resize", function () {
+    // SVG viewBox is responsive; no redraw needed.
+  });
+
+  document.getElementById("download").addEventListener("click", function () {
+    const html = "<!DOCTYPE html>\n" + document.documentElement.outerHTML;
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "FaceTempo_Report.html";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+    this.textContent = "✅ 已开始下载";
+    const btn = this;
+    setTimeout(function () { btn.textContent = "⬇ 下载本报告 HTML"; }, 2400);
+  });
+})();
+</script>
+</body>
+</html>
