@@ -52,9 +52,8 @@
   "project": "FaceTempo",
   "repo": "https://github.com/04243216/facetempo",
   "git": {
-    "local_head": "cd70c96",
-    "origin_head": "08a9716",
-    "note": "local is ahead of origin; push may be pending due to network"
+    "baseline_head_at_writing": "cd70c96",
+    "note": "report commit comes after this baseline; run `git log -1` for the current head"
   },
   "canonical_metric": {
     "name": "normalized_eye_jerk",
