@@ -57,6 +57,7 @@ python src/plot_dynamics.py --csv outputs/w4_final/features_curated2 --video_dir
 ### Docs
 
 - [Technical report](README_technical_report.md)
+- [Production & AI handoff report](docs/FaceTempo_制作流程与AI报告.md)
 - [Visual portfolio report](FaceTempo_Report.html)
 - [Deployment guide](DEPLOY_GUIDE.md)
 - [Metric specification](docs/metrics_spec.md)
